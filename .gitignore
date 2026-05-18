@@ -1,0 +1,25 @@
+# Local secrets
+.env*
+!.env.example
+
+# Runtime state and logs
+COD_gateway_events.jsonl
+COD_gateway_state.json
+*.log
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Installed/generated local launch agent
+com.codex.COD_telegram_gateway.plist
+
+# Private operator docs for a local deployment
+AGENTS.md
+CODEX.md
+clientworksheets_rehydrate.sh
+
+# macOS/editor noise
+.DS_Store
+.vscode/
+.idea/

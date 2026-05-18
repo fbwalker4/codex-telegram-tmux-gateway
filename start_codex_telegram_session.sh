@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION="${COD_TELEGRAM_TMUX_SESSION:-codex}"
+WINDOW="${COD_TELEGRAM_TMUX_WINDOW:-0}"
+PANE="${COD_TELEGRAM_TMUX_PANE:-0}"
+TARGET="${SESSION}:${WINDOW}.${PANE}"
+CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
+CODEX_ARGS=(
+  "--sandbox" "danger-full-access"
+  "--ask-for-approval" "never"
+)
+GATEWAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GATEWAY="${GATEWAY_DIR}/COD_telegram_gateway.py"
+PYTHON="${PYTHON:-$(command -v python3 || true)}"
+
+if [[ -z "${CODEX_BIN}" ]]; then
+  echo "codex was not found. Set CODEX_BIN=/path/to/codex or add codex to PATH." >&2
+  exit 1
+fi
+
+if [[ -z "${PYTHON}" ]]; then
+  echo "python3 was not found. Set PYTHON=/path/to/python3 or add python3 to PATH." >&2
+  exit 1
+fi
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "tmux is required for shared terminal/Telegram Codex sessions." >&2
+  exit 1
+fi
+
+if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
+  (
+    cd "${GATEWAY_DIR}"
+    "${PYTHON}" - "${GATEWAY}" "${PWD}" "${CODEX_BIN}" "${CODEX_ARGS[@]}" <<'PY'
+import importlib.util
+import sys
+
+gateway, cwd, *argv = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("gw", gateway)
+gw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gw)
+gw.log_event("codex_command", {
+    "cwd": cwd,
+    "argv": gw.redact_command(argv),
+    "launcher": "start_codex_telegram_session.sh",
+})
+PY
+  )
+  tmux new-session -d -s "${SESSION}" -c "${PWD}" "${CODEX_BIN}" "${CODEX_ARGS[@]}"
+fi
+
+(
+  cd "${GATEWAY_DIR}"
+  "${PYTHON}" - <<PY
+import importlib.util
+spec = importlib.util.spec_from_file_location("gw", "${GATEWAY}")
+gw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gw)
+gw.load_env_file()
+gw.update_env_file({
+    "COD_TELEGRAM_TMUX_TARGET": "${TARGET}",
+    "COD_TELEGRAM_TMUX_REQUIRE_COMMAND": "codex",
+})
+gw.install_launch_agent()
+gw.launchctl("unload", str(gw.LAUNCH_AGENT_PATH))
+loaded = gw.launchctl("load", str(gw.LAUNCH_AGENT_PATH))
+if loaded.returncode != 0:
+    raise SystemExit(loaded.stderr.strip() or loaded.stdout.strip())
+gw.log_event("gateway_bound", {"target": "${TARGET}", "launcher": "start_codex_telegram_session.sh"})
+PY
+)
+
+echo "Telegram gateway bound to tmux target ${TARGET}."
+echo "Attach/detach normally; detach with Ctrl-b then d."
+exec tmux attach-session -t "${SESSION}"
