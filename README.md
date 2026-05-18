@@ -23,6 +23,8 @@ That means you can:
 - `tmux` injection into one persistent Codex pane.
 - Message prefixing as `[Telegram] <message>` so Codex can route replies correctly.
 - Telegram `typing` chat action on receipt.
+- Telegram inline buttons for Codex permission prompts.
+- Runtime modes: YOLO, Stark, read-only, or custom.
 - Chunked Telegram replies under Telegram's message length limit.
 - Local JSONL event log for troubleshooting.
 - macOS LaunchAgent install/start/stop helpers.
@@ -68,6 +70,7 @@ TELEGRAM_BOT_TOKEN=123456789:your-bot-token
 TELEGRAM_OWNER_CHAT_ID=123456789
 COD_TELEGRAM_TMUX_TARGET=codex:0.0
 COD_TELEGRAM_TMUX_REQUIRE_COMMAND=codex
+CODEX_TELEGRAM_CODEX_MODE=stark
 ```
 
 3. Start a persistent Codex tmux session and bind the gateway.
@@ -140,6 +143,59 @@ Queue only, without injecting into tmux:
 python3 COD_telegram_gateway.py run --mode queue --timeout 30
 ```
 
+Check the current tmux pane for a permission prompt and send Telegram buttons if one is visible:
+
+```bash
+python3 COD_telegram_gateway.py check-permission
+```
+
+## Runtime Modes
+
+`start_codex_telegram_session.sh` supports four runtime modes through `CODEX_TELEGRAM_CODEX_MODE`.
+If unset, the launcher defaults to `stark`.
+
+| Mode | Codex sandbox | Approval policy | Use when |
+|---|---|---|---|
+| `yolo` | `danger-full-access` | `never` | You fully trust the session and want no permission prompts. |
+| `stark` | `workspace-write` | `on-request` | You want normal file edits, but risky actions should ask. |
+| `read-only` | `read-only` | `on-request` | You want inspection/review by default. |
+| `custom` | `CODEX_SANDBOX` | `CODEX_APPROVAL_POLICY` | You want explicit control. |
+
+Example:
+
+```bash
+CODEX_TELEGRAM_CODEX_MODE=stark ./start_codex_telegram_session.sh
+```
+
+For custom mode:
+
+```bash
+CODEX_TELEGRAM_CODEX_MODE=custom \
+CODEX_SANDBOX=workspace-write \
+CODEX_APPROVAL_POLICY=on-request \
+./start_codex_telegram_session.sh
+```
+
+## Telegram Permission Buttons
+
+When the gateway sees text in the tmux pane that looks like a Codex permission prompt, it sends a Telegram message with inline buttons:
+
+- `Approve once`
+- `Approve session`
+- `Deny`
+
+The gateway then sends configurable `tmux send-keys` tokens back to the Codex pane.
+
+Defaults:
+
+```text
+COD_TELEGRAM_APPROVE_KEYS=C-m
+COD_TELEGRAM_APPROVE_SESSION_KEYS=Right,C-m
+COD_TELEGRAM_DENY_KEYS=Escape
+```
+
+These defaults are deliberately configurable because terminal approval UIs can change. If your Codex prompt requires different keys, update `.env.codex-telegram`.
+
 ## Security Model
 
 This is intentionally simple and conservative:
@@ -150,6 +206,7 @@ This is intentionally simple and conservative:
 - Unknown chats are logged and ignored.
 - The gateway does not expose an HTTP server.
 - The gateway does not run arbitrary shell commands by itself; it only injects text into your existing Codex tmux pane.
+- Permission buttons send configured keystrokes to the active tmux pane. Review the prompt tail in Telegram before approving.
 
 You are still responsible for what your Codex session is allowed to do. If your Codex process has broad filesystem or deployment permissions, Telegram becomes a remote control path to that session. Protect your Telegram account and bot token accordingly.
 

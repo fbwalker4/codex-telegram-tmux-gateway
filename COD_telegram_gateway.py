@@ -13,6 +13,7 @@ the repo's .env* rule.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -36,6 +37,20 @@ MAX_TG_LEN = 3900
 DEFAULT_TMUX_TARGET = "codex:0.0"
 DEFAULT_TMUX_REQUIRE_COMMAND = "codex"
 LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.COD_telegram_gateway.plist"
+APPROVAL_PROMPT_PATTERNS = (
+    "approve once",
+    "approve session",
+    "allow command",
+    "allow this command",
+    "permission to run",
+    "requires approval",
+    "requires confirmation",
+    "escalated permissions",
+    "codex wants to run",
+    "do you want to run",
+    "would you like to run",
+    "run this command?",
+)
 
 
 def load_env_file(path: Path = ENV_PATH) -> None:
@@ -137,11 +152,14 @@ def api_call(method: str, params: dict[str, Any] | None = None, timeout: int = 9
     return payload
 
 
-def send_message(text: str, chat_id: str | None = None) -> None:
+def send_message(text: str, chat_id: str | None = None, reply_markup: dict[str, Any] | None = None) -> None:
     target = chat_id or owner_chat_id()
     chunks = [text[i : i + MAX_TG_LEN] for i in range(0, len(text), MAX_TG_LEN)] or [""]
     for chunk in chunks:
-        payload = api_call("sendMessage", {"chat_id": target, "text": chunk})
+        params: dict[str, Any] = {"chat_id": target, "text": chunk}
+        if reply_markup:
+            params["reply_markup"] = json.dumps(reply_markup)
+        payload = api_call("sendMessage", params)
         result = payload.get("result", {})
         log_event(
             "outbound",
@@ -165,7 +183,7 @@ def get_updates(timeout: int) -> list[dict[str, Any]]:
     state = read_state()
     params: dict[str, Any] = {
         "timeout": timeout,
-        "allowed_updates": json.dumps(["message", "edited_message"]),
+        "allowed_updates": json.dumps(["message", "edited_message", "callback_query"]),
     }
     if "offset" in state:
         params["offset"] = int(state["offset"])
@@ -178,6 +196,26 @@ def update_offset(update: dict[str, Any]) -> None:
     state["offset"] = int(update["update_id"]) + 1
     state["updated_at"] = now_iso()
     write_state(state)
+
+
+def extract_callback(update: dict[str, Any]) -> dict[str, Any] | None:
+    callback = update.get("callback_query")
+    if not callback:
+        return None
+    sender = callback.get("from") or {}
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    return {
+        "update_id": update.get("update_id"),
+        "callback_query_id": callback.get("id"),
+        "chat_id": str(chat.get("id", "")),
+        "from_id": str(sender.get("id", "")),
+        "from_name": " ".join(
+            p for p in [sender.get("first_name", ""), sender.get("last_name", "")] if p
+        ).strip(),
+        "data": callback.get("data") or "",
+        "message_id": message.get("message_id"),
+    }
 
 
 def extract_message(update: dict[str, Any]) -> dict[str, Any] | None:
@@ -220,6 +258,10 @@ def run_tmux(args: list[str], input_text: str | None = None) -> subprocess.Compl
         stderr=subprocess.PIPE,
         timeout=10,
     )
+
+
+def split_tmux_keys(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def current_tmux_target() -> str:
@@ -266,6 +308,65 @@ def ensure_tmux_target(target: str) -> tuple[bool, str]:
     return True, ""
 
 
+def capture_tmux_text(target: str, lines: int = 80) -> str:
+    proc = run_tmux(["capture-pane", "-p", "-S", f"-{lines}", "-t", target])
+    if proc.returncode != 0:
+        raise RuntimeError(f"tmux capture-pane failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    return proc.stdout
+
+
+def approval_prompt_signature(text: str) -> str | None:
+    tail = "\n".join(line.rstrip() for line in text.splitlines()[-30:])
+    lowered = tail.lower()
+    if not any(pattern in lowered for pattern in APPROVAL_PROMPT_PATTERNS):
+        return None
+    return hashlib.sha256(tail.encode("utf-8")).hexdigest()[:16]
+
+
+def approval_keyboard(signature: str) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Approve once", "callback_data": f"perm:{signature}:approve"},
+                {"text": "Deny", "callback_data": f"perm:{signature}:deny"},
+            ],
+            [
+                {"text": "Approve session", "callback_data": f"perm:{signature}:approve_session"},
+            ],
+        ]
+    }
+
+
+def send_permission_prompt_if_needed(target: str | None = None, chat_id: str | None = None) -> None:
+    target = target or tmux_target()
+    state = read_state()
+    pane_text = capture_tmux_text(target)
+    signature = approval_prompt_signature(pane_text)
+    if not signature:
+        return
+
+    pending = state.get("pending_permission") or {}
+    if pending.get("signature") == signature:
+        return
+
+    state["pending_permission"] = {
+        "signature": signature,
+        "target": target,
+        "status": "sent",
+        "created_at": now_iso(),
+    }
+    write_state(state)
+    preview = "\n".join(pane_text.splitlines()[-10:]).strip()
+    send_message(
+        "Codex is asking for permission.\n\n"
+        "Review the terminal prompt before approving. Use Deny if you are unsure.\n\n"
+        f"Prompt tail:\n{preview[-1200:]}",
+        chat_id=chat_id,
+        reply_markup=approval_keyboard(signature),
+    )
+    log_event("permission_prompt_sent", {"target": target, "signature": signature})
+
+
 def inject_tmux_prompt(message: dict[str, Any]) -> str:
     target = tmux_target()
     ok, error = ensure_tmux_target(target)
@@ -290,7 +391,74 @@ def inject_tmux_prompt(message: dict[str, Any]) -> str:
         raise RuntimeError(f"tmux send-keys failed: {enter.stderr.strip() or enter.stdout.strip()}")
 
     log_event("tmux_injected", {"update_id": message["update_id"], "target": target, "chars": len(prompt)})
+    time.sleep(0.8)
+    try:
+        send_permission_prompt_if_needed(target, message["chat_id"])
+    except Exception as exc:
+        log_event("permission_watch_error", {"target": target, "error": str(exc)})
     return f"Sent to Codex tmux target `{target}`."
+
+
+def permission_key_sequence(action: str) -> list[str]:
+    defaults = {
+        "approve": "C-m",
+        "approve_session": "Right,C-m",
+        "deny": "Escape",
+    }
+    env_names = {
+        "approve": "COD_TELEGRAM_APPROVE_KEYS",
+        "approve_session": "COD_TELEGRAM_APPROVE_SESSION_KEYS",
+        "deny": "COD_TELEGRAM_DENY_KEYS",
+    }
+    value = os.environ.get(env_names[action], defaults[action])
+    return split_tmux_keys(value)
+
+
+def answer_callback(callback_query_id: str, text: str, alert: bool = False) -> None:
+    api_call(
+        "answerCallbackQuery",
+        {"callback_query_id": callback_query_id, "text": text, "show_alert": "true" if alert else "false"},
+        timeout=10,
+    )
+
+
+def handle_permission_callback(callback: dict[str, Any]) -> None:
+    allowed = owner_chat_id()
+    if callback["chat_id"] != allowed:
+        log_event("ignored_callback", callback)
+        answer_callback(callback["callback_query_id"], "Not authorized.", alert=True)
+        return
+
+    parts = callback["data"].split(":")
+    if len(parts) != 3 or parts[0] != "perm":
+        answer_callback(callback["callback_query_id"], "Unknown action.", alert=True)
+        return
+
+    _, signature, action = parts
+    if action not in {"approve", "approve_session", "deny"}:
+        answer_callback(callback["callback_query_id"], "Unknown permission action.", alert=True)
+        return
+
+    state = read_state()
+    pending = state.get("pending_permission") or {}
+    if pending.get("signature") != signature:
+        answer_callback(callback["callback_query_id"], "That permission prompt is no longer current.", alert=True)
+        return
+
+    target = pending.get("target") or tmux_target()
+    keys = permission_key_sequence(action)
+    proc = run_tmux(["send-keys", "-t", target, *keys])
+    if proc.returncode != 0:
+        answer_callback(callback["callback_query_id"], "Could not send keys to tmux.", alert=True)
+        raise RuntimeError(f"tmux permission send-keys failed: {proc.stderr.strip() or proc.stdout.strip()}")
+
+    pending["status"] = action
+    pending["resolved_at"] = now_iso()
+    state["pending_permission"] = pending
+    write_state(state)
+    answer_callback(callback["callback_query_id"], f"Sent: {action.replace('_', ' ')}")
+    send_message(f"Permission response sent to Codex: {action.replace('_', ' ')}", callback["chat_id"])
+    log_event("permission_callback", {"target": target, "signature": signature, "action": action, "keys": keys})
 
 
 def launchctl(*args: str) -> subprocess.CompletedProcess[str]:
@@ -393,6 +561,14 @@ def gateway_status() -> None:
 
 
 def handle_update(update: dict[str, Any], mode: str) -> None:
+    callback = extract_callback(update)
+    if callback:
+        try:
+            handle_permission_callback(callback)
+        finally:
+            update_offset(update)
+        return
+
     message = extract_message(update)
     if not message:
         update_offset(update)
@@ -450,6 +626,11 @@ def loop(mode: str, timeout: int, once: bool) -> None:
             updates = get_updates(timeout)
             for update in updates:
                 handle_update(update, mode)
+            if mode == "tmux":
+                try:
+                    send_permission_prompt_if_needed()
+                except Exception as exc:
+                    log_event("permission_watch_error", {"target": tmux_target(), "error": str(exc)})
         except Exception as exc:
             log_event("loop_error", {"error": str(exc)})
             time.sleep(5)
@@ -493,6 +674,8 @@ def main() -> None:
     typing = sub.add_parser("typing")
     typing.add_argument("--action", default="typing")
 
+    sub.add_parser("check-permission")
+
     sub.add_parser("sync-offset")
     sub.add_parser("start-gateway")
     sub.add_parser("stop-gateway")
@@ -512,6 +695,9 @@ def main() -> None:
     elif args.command == "typing":
         load_env_file()
         send_chat_action(args.action)
+    elif args.command == "check-permission":
+        load_env_file()
+        send_permission_prompt_if_needed()
     elif args.command == "sync-offset":
         sync_offset()
     elif args.command == "start-gateway":

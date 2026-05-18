@@ -6,9 +6,33 @@ WINDOW="${COD_TELEGRAM_TMUX_WINDOW:-0}"
 PANE="${COD_TELEGRAM_TMUX_PANE:-0}"
 TARGET="${SESSION}:${WINDOW}.${PANE}"
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
+CODEX_RUNTIME_MODE="${CODEX_TELEGRAM_CODEX_MODE:-stark}"
+case "${CODEX_RUNTIME_MODE}" in
+  yolo)
+    CODEX_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
+    CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-never}"
+    ;;
+  stark|strict)
+    CODEX_SANDBOX="${CODEX_SANDBOX:-workspace-write}"
+    CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-on-request}"
+    ;;
+  readonly|read-only)
+    CODEX_SANDBOX="${CODEX_SANDBOX:-read-only}"
+    CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:-on-request}"
+    ;;
+  custom)
+    CODEX_SANDBOX="${CODEX_SANDBOX:?Set CODEX_SANDBOX for custom mode}"
+    CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY:?Set CODEX_APPROVAL_POLICY for custom mode}"
+    ;;
+  *)
+    echo "Unknown CODEX_TELEGRAM_CODEX_MODE: ${CODEX_RUNTIME_MODE}" >&2
+    echo "Use yolo, stark, read-only, or custom." >&2
+    exit 1
+    ;;
+esac
 CODEX_ARGS=(
-  "--sandbox" "danger-full-access"
-  "--ask-for-approval" "never"
+  "--sandbox" "${CODEX_SANDBOX}"
+  "--ask-for-approval" "${CODEX_APPROVAL_POLICY}"
 )
 GATEWAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATEWAY="${GATEWAY_DIR}/COD_telegram_gateway.py"
@@ -43,6 +67,7 @@ spec.loader.exec_module(gw)
 gw.log_event("codex_command", {
     "cwd": cwd,
     "argv": gw.redact_command(argv),
+    "runtime_mode": "${CODEX_RUNTIME_MODE}",
     "launcher": "start_codex_telegram_session.sh",
 })
 PY
@@ -61,6 +86,9 @@ gw.load_env_file()
 gw.update_env_file({
     "COD_TELEGRAM_TMUX_TARGET": "${TARGET}",
     "COD_TELEGRAM_TMUX_REQUIRE_COMMAND": "codex",
+    "CODEX_TELEGRAM_CODEX_MODE": "${CODEX_RUNTIME_MODE}",
+    "CODEX_SANDBOX": "${CODEX_SANDBOX}",
+    "CODEX_APPROVAL_POLICY": "${CODEX_APPROVAL_POLICY}",
 })
 gw.install_launch_agent()
 gw.launchctl("unload", str(gw.LAUNCH_AGENT_PATH))
