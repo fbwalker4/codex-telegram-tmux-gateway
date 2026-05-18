@@ -4,6 +4,8 @@ A small Telegram gateway for controlling one persistent Codex session from Teleg
 
 The gateway polls a Telegram bot, accepts messages only from one allow-listed chat ID, sends Telegram's `typing` indicator as soon as a message is accepted, and injects the message into an existing `tmux` pane as if you typed it in the Codex TUI.
 
+Created by F.B. "Rusty" Walker, IV and released as open source under the MIT License.
+
 ## Why This Exists
 
 Running a new `codex exec` process for every Telegram message loses conversational and terminal context. This project keeps one Codex process alive inside `tmux` and routes Telegram messages into that same pane.
@@ -32,27 +34,32 @@ That means you can:
 
 ## Requirements
 
-- macOS for LaunchAgent management.
 - Python 3.10+.
 - `tmux`.
 - Codex CLI installed and available on `PATH`, or set `CODEX_BIN`.
 - A Telegram bot token from BotFather.
 - Your Telegram chat ID.
 
-## Repository Name
+## Platform Support
 
-Recommended GitHub repository name:
+The core gateway is portable anywhere Python 3, `tmux`, and the Codex CLI run:
 
-`codex-telegram-tmux-gateway`
+- macOS: fully supported, including the included LaunchAgent start/stop helpers.
+- Linux: the foreground gateway and tmux injection should work, but you will need to run it under your own process manager such as `systemd`, `supervisord`, or a shell/tmux session.
+- Windows: not directly supported unless you are using a Unix-like environment with `tmux`, such as WSL.
 
-It is descriptive and discoverable: Codex + Telegram + tmux + gateway.
+The `start_codex_telegram_session.sh` convenience launcher is written for Unix-like shells. The macOS LaunchAgent pieces are macOS-only.
+
+## Repository
+
+GitHub: https://github.com/fbwalker4/codex-telegram-tmux-gateway
 
 ## Quick Start
 
 1. Clone the repository.
 
 ```bash
-git clone https://github.com/<you>/codex-telegram-tmux-gateway.git
+git clone https://github.com/fbwalker4/codex-telegram-tmux-gateway.git
 cd codex-telegram-tmux-gateway
 ```
 
@@ -221,7 +228,7 @@ The included `.gitignore` excludes:
 - generated local LaunchAgent plist,
 - private operator notes.
 
-Before publishing publicly, run:
+Before publishing your own fork publicly, run:
 
 ```bash
 git status --short
@@ -248,4 +255,6 @@ Telegram typing indicators are temporary. Telegram clients usually display them 
 
 ## License
 
-Add a license before publishing. MIT is a reasonable default for this kind of utility.
+MIT License.
+
+MIT is a good fit for this project because it is a small integration utility: it allows broad personal, commercial, and forked use while preserving the copyright notice and warranty disclaimer.
