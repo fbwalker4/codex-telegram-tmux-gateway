@@ -56,19 +56,10 @@ LAUNCH_AGENT_LABEL = f"com.codex.COD_telegram_gateway{LAUNCH_AGENT_SUFFIX}"
 LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 DEFAULT_TYPING_KEEPALIVE_SECONDS = 600
 DEFAULT_TYPING_INTERVAL_SECONDS = 4
-APPROVAL_PROMPT_PATTERNS = (
-    "approve once",
-    "approve session",
-    "allow command",
-    "allow this command",
-    "permission to run",
-    "requires approval",
-    "requires confirmation",
-    "escalated permissions",
-    "codex wants to run",
-    "do you want to run",
-    "would you like to run",
-    "run this command?",
+APPROVAL_PROMPT_REQUIRED_PATTERNS = (
+    "would you like to run the following command?",
+    "› 1. yes, proceed",
+    "press enter to confirm or esc to cancel",
 )
 
 
@@ -165,6 +156,10 @@ def typing_keepalive_seconds() -> int:
 
 def typing_interval_seconds() -> int:
     return int(os.environ.get("COD_TELEGRAM_TYPING_INTERVAL_SECONDS", DEFAULT_TYPING_INTERVAL_SECONDS))
+
+
+def permission_buttons_enabled() -> bool:
+    return os.environ.get("COD_TELEGRAM_PERMISSION_BUTTONS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def api_call(method: str, params: dict[str, Any] | None = None, timeout: int = 90) -> dict[str, Any]:
@@ -409,7 +404,7 @@ def capture_tmux_text(target: str, lines: int = 80) -> str:
 def approval_prompt_signature(text: str) -> str | None:
     tail = "\n".join(line.rstrip() for line in text.splitlines()[-30:])
     lowered = tail.lower()
-    if not any(pattern in lowered for pattern in APPROVAL_PROMPT_PATTERNS):
+    if not all(pattern in lowered for pattern in APPROVAL_PROMPT_REQUIRED_PATTERNS):
         return None
     return hashlib.sha256(tail.encode("utf-8")).hexdigest()[:16]
 
@@ -429,6 +424,8 @@ def approval_keyboard(signature: str) -> dict[str, Any]:
 
 
 def send_permission_prompt_if_needed(target: str | None = None, chat_id: str | None = None) -> None:
+    if not permission_buttons_enabled():
+        return
     target = target or tmux_target()
     state = read_state()
     pane_text = capture_tmux_text(target)
@@ -493,7 +490,7 @@ def inject_tmux_prompt(message: dict[str, Any]) -> str:
 def permission_key_sequence(action: str) -> list[str]:
     defaults = {
         "approve": "C-m",
-        "approve_session": "Right,C-m",
+        "approve_session": "Down,C-m",
         "deny": "Escape",
     }
     env_names = {

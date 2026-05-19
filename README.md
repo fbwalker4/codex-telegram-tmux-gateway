@@ -311,7 +311,13 @@ CODEX_APPROVAL_POLICY=on-request \
 
 ## Telegram Permission Buttons
 
-When the gateway sees text in the tmux pane that looks like a Codex permission prompt, it sends a Telegram message with inline buttons:
+Permission buttons are disabled by default. Enable them only after confirming the key sequence matches your Codex TUI:
+
+```text
+COD_TELEGRAM_PERMISSION_BUTTONS=1
+```
+
+When enabled, if the gateway sees a real Codex permission prompt in the tmux pane, it sends a Telegram message with inline buttons:
 
 - `Approve once`
 - `Approve session`
@@ -323,8 +329,9 @@ Defaults:
 
 ```text
 COD_TELEGRAM_APPROVE_KEYS=C-m
-COD_TELEGRAM_APPROVE_SESSION_KEYS=Right,C-m
+COD_TELEGRAM_APPROVE_SESSION_KEYS=Down,C-m
 COD_TELEGRAM_DENY_KEYS=Escape
+COD_TELEGRAM_PERMISSION_BUTTONS=0
 ```
 
 These defaults are deliberately configurable because terminal approval UIs can change. If your Codex prompt requires different keys, update `.env.codex-telegram`.
