@@ -37,6 +37,8 @@ MAX_TG_LEN = 3900
 DEFAULT_TMUX_TARGET = "codex:0.0"
 DEFAULT_TMUX_REQUIRE_COMMAND = "codex"
 LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.COD_telegram_gateway.plist"
+DEFAULT_TYPING_KEEPALIVE_SECONDS = 600
+DEFAULT_TYPING_INTERVAL_SECONDS = 4
 APPROVAL_PROMPT_PATTERNS = (
     "approve once",
     "approve session",
@@ -140,6 +142,14 @@ def owner_chat_id() -> str:
     return require_env("TELEGRAM_OWNER_CHAT_ID")
 
 
+def typing_keepalive_seconds() -> int:
+    return int(os.environ.get("COD_TELEGRAM_TYPING_KEEPALIVE_SECONDS", DEFAULT_TYPING_KEEPALIVE_SECONDS))
+
+
+def typing_interval_seconds() -> int:
+    return int(os.environ.get("COD_TELEGRAM_TYPING_INTERVAL_SECONDS", DEFAULT_TYPING_INTERVAL_SECONDS))
+
+
 def api_call(method: str, params: dict[str, Any] | None = None, timeout: int = 90) -> dict[str, Any]:
     data = None
     if params is not None:
@@ -170,6 +180,7 @@ def send_message(text: str, chat_id: str | None = None, reply_markup: dict[str, 
                 "preview": chunk[:160],
             },
         )
+    stop_typing_keepalive(target)
 
 
 def send_chat_action(action: str = "typing", chat_id: str | None = None) -> None:
@@ -177,6 +188,69 @@ def send_chat_action(action: str = "typing", chat_id: str | None = None) -> None
     payload = api_call("sendChatAction", {"chat_id": target, "action": action}, timeout=10)
     if payload.get("ok"):
         log_event("chat_action", {"chat_id": str(target), "action": action})
+
+
+def start_typing_keepalive(chat_id: str, update_id: int | None = None) -> None:
+    state = read_state()
+    now = time.time()
+    state["typing_keepalive"] = {
+        "chat_id": str(chat_id),
+        "update_id": update_id,
+        "started_at": now,
+        "until": now + typing_keepalive_seconds(),
+        "next_at": now,
+    }
+    write_state(state)
+    refresh_typing_keepalive(force=True)
+
+
+def stop_typing_keepalive(chat_id: str | None = None) -> None:
+    state = read_state()
+    keepalive = state.get("typing_keepalive") or {}
+    if not keepalive:
+        return
+    if chat_id is not None and str(keepalive.get("chat_id")) != str(chat_id):
+        return
+    state.pop("typing_keepalive", None)
+    state["typing_keepalive_stopped_at"] = now_iso()
+    write_state(state)
+
+
+def refresh_typing_keepalive(force: bool = False) -> None:
+    state = read_state()
+    keepalive = state.get("typing_keepalive") or {}
+    if not keepalive:
+        return
+
+    now = time.time()
+    if now >= float(keepalive.get("until", 0)):
+        state.pop("typing_keepalive", None)
+        state["typing_keepalive_expired_at"] = now_iso()
+        write_state(state)
+        log_event("typing_keepalive_expired", {"chat_id": str(keepalive.get("chat_id", ""))})
+        return
+
+    if not force and now < float(keepalive.get("next_at", 0)):
+        return
+
+    chat_id = str(keepalive.get("chat_id") or owner_chat_id())
+    try:
+        send_chat_action("typing", chat_id)
+        keepalive["next_at"] = now + typing_interval_seconds()
+        keepalive["last_sent_at"] = now
+        state["typing_keepalive"] = keepalive
+        write_state(state)
+    except Exception as exc:
+        keepalive["next_at"] = now + typing_interval_seconds()
+        keepalive["last_error"] = str(exc)
+        state["typing_keepalive"] = keepalive
+        write_state(state)
+        log_event("typing_keepalive_error", {"chat_id": chat_id, "error": str(exc)})
+
+
+def typing_keepalive_is_active() -> bool:
+    keepalive = (read_state().get("typing_keepalive") or {})
+    return bool(keepalive) and time.time() < float(keepalive.get("until", 0))
 
 
 def get_updates(timeout: int) -> list[dict[str, Any]]:
@@ -593,11 +667,6 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
         update_offset(update)
         return
 
-    try:
-        send_chat_action("typing", message["chat_id"])
-    except Exception as exc:
-        log_event("chat_action_error", {**message, "error": str(exc)})
-
     if mode == "queue":
         log_event("queued_only", message)
         update_offset(update)
@@ -605,6 +674,7 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
 
     try:
         if mode == "tmux":
+            start_typing_keepalive(message["chat_id"], message["update_id"])
             inject_tmux_prompt(message)
         else:
             raise RuntimeError(f"Unsupported gateway mode `{mode}`. Only `tmux` and `queue` are allowed.")
@@ -623,10 +693,15 @@ def loop(mode: str, timeout: int, once: bool) -> None:
     log_event("gateway_start", {"mode": mode, "once": once})
     while True:
         try:
-            updates = get_updates(timeout)
+            refresh_typing_keepalive()
+            poll_timeout = timeout
+            if mode == "tmux" and typing_keepalive_is_active():
+                poll_timeout = min(timeout, max(1, typing_interval_seconds()))
+            updates = get_updates(poll_timeout)
             for update in updates:
                 handle_update(update, mode)
             if mode == "tmux":
+                refresh_typing_keepalive()
                 try:
                     send_permission_prompt_if_needed()
                 except Exception as exc:

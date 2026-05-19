@@ -47,6 +47,7 @@ If you need multi-user routing, SDK session management, voice transcription, fil
 - `tmux` injection into one persistent Codex pane.
 - Message prefixing as `[Telegram] <message>` so Codex can route replies correctly.
 - Telegram `typing` chat action on receipt.
+- Typing keepalive while Codex is working, so Telegram does not look dropped.
 - Telegram inline buttons for Codex permission prompts.
 - Runtime modes: YOLO, Stark, read-only, or custom.
 - Chunked Telegram replies under Telegram's message length limit.
@@ -231,6 +232,23 @@ Check the current tmux pane for a permission prompt and send Telegram buttons if
 python3 COD_telegram_gateway.py check-permission
 ```
 
+## Typing Keepalive
+
+Telegram typing indicators expire after a few seconds. When a Telegram request is handed to Codex, the gateway refreshes `sendChatAction(action="typing")` until one of these happens:
+
+- Codex sends a Telegram reply through `COD_telegram_gateway.py send`.
+- The keepalive timeout expires.
+- The gateway is stopped.
+
+Defaults:
+
+```text
+COD_TELEGRAM_TYPING_KEEPALIVE_SECONDS=600
+COD_TELEGRAM_TYPING_INTERVAL_SECONDS=4
+```
+
+Increase the timeout if your Codex tasks often run longer than ten minutes. Keep the interval near four seconds; Telegram clients do not display typing indefinitely from a single API call.
+
 ## Runtime Modes
 
 `start_codex_telegram_session.sh` supports four runtime modes through `CODEX_TELEGRAM_CODEX_MODE`.
@@ -277,6 +295,22 @@ COD_TELEGRAM_DENY_KEYS=Escape
 ```
 
 These defaults are deliberately configurable because terminal approval UIs can change. If your Codex prompt requires different keys, update `.env.codex-telegram`.
+
+## Multiple Bots Or Sessions
+
+The default setup is intentionally one bot, one allowed Telegram chat, and one Codex tmux target.
+
+You can run multiple gateways, but each instance needs its own isolated configuration:
+
+- its own Telegram bot token,
+- its own owner chat ID,
+- its own tmux target,
+- its own env file,
+- its own state file,
+- its own event log,
+- its own process manager or LaunchAgent label.
+
+The current bundled LaunchAgent helper is single-instance. For multiple always-on bots, add instance namespacing before running them side by side so callback state, update offsets, logs, and LaunchAgent labels do not collide.
 
 ## Security Model
 
