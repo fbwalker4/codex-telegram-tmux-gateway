@@ -79,6 +79,31 @@ GitHub: https://github.com/fbwalker4/codex-telegram-tmux-gateway
 
 ## Quick Start
 
+### Simplest Operator Commands
+
+After setup, use the helper command instead of remembering env vars:
+
+```bash
+./codex-telegram list
+./codex-telegram start tools
+./codex-telegram start-all
+./codex-telegram status tools
+./codex-telegram send tools "Tools instance is online."
+```
+
+Register a bot alias once:
+
+```bash
+./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>'
+```
+
+This writes ignored local files only:
+
+```text
+.env.codex-telegram-tools
+codex_telegram_instances.json
+```
+
 ### Let Codex Install It For You
 
 If you already have Codex running on the machine where you want the gateway installed, you can give Codex this prompt:
@@ -319,30 +344,33 @@ deploy  -> .env.codex-telegram-deploy -> codex-deploy:0.0 -> com.codex.COD_teleg
 Create a separate bot token for each instance through BotFather, then initialize each instance:
 
 ```bash
-CODEX_TELEGRAM_INSTANCE=tools \
-python3 COD_telegram_gateway.py init-env --token '<tools-bot-token>' --chat-id '<your-chat-id>'
-
-CODEX_TELEGRAM_INSTANCE=deploy \
-python3 COD_telegram_gateway.py init-env --token '<deploy-bot-token>' --chat-id '<your-chat-id>'
+./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>'
+./codex-telegram add deploy --token '<deploy-bot-token>' --chat-id '<your-chat-id>'
 ```
 
 Start each instance:
 
 ```bash
-./start_codex_telegram_session.sh --instance tools
-./start_codex_telegram_session.sh --instance deploy
+./codex-telegram start tools
+./codex-telegram start deploy
+```
+
+Or start all saved instances:
+
+```bash
+./codex-telegram start-all
 ```
 
 Check an instance:
 
 ```bash
-CODEX_TELEGRAM_INSTANCE=tools python3 COD_telegram_gateway.py status
+./codex-telegram status tools
 ```
 
 Send through an instance's bot:
 
 ```bash
-CODEX_TELEGRAM_INSTANCE=tools python3 COD_telegram_gateway.py send "Tools instance is online."
+./codex-telegram send tools "Tools instance is online."
 ```
 
 Each instance needs:

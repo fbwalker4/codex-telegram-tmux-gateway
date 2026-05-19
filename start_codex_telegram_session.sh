@@ -2,6 +2,7 @@
 set -euo pipefail
 
 INSTANCE="${CODEX_TELEGRAM_INSTANCE:-}"
+NO_ATTACH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --instance)
@@ -12,16 +13,21 @@ while [[ $# -gt 0 ]]; do
       INSTANCE="${1#--instance=}"
       shift
       ;;
+    --no-attach)
+      NO_ATTACH=1
+      shift
+      ;;
     --help|-h)
-      echo "Usage: $0 [--instance NAME]"
+      echo "Usage: $0 [--instance NAME] [--no-attach]"
       echo
       echo "Default instance uses .env.codex-telegram and tmux session codex."
       echo "Named instances use .env.codex-telegram-NAME and tmux session codex-NAME."
+      echo "--no-attach starts/binds the instance without attaching to tmux."
       exit 0
       ;;
     *)
       echo "Unknown argument: $1" >&2
-      echo "Usage: $0 [--instance NAME]" >&2
+      echo "Usage: $0 [--instance NAME] [--no-attach]" >&2
       exit 1
       ;;
   esac
@@ -151,5 +157,9 @@ PY
 )
 
 echo "Telegram gateway instance ${INSTANCE:-default} bound to tmux target ${TARGET}."
+if [[ "${NO_ATTACH}" == "1" ]]; then
+  echo "Running detached. Attach later with: tmux attach-session -t ${SESSION}"
+  exit 0
+fi
 echo "Attach/detach normally; detach with Ctrl-b then d."
 exec tmux attach-session -t "${SESSION}"
