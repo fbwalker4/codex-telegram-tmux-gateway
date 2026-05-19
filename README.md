@@ -162,6 +162,12 @@ python3 COD_telegram_gateway.py init-env --token '<telegram-bot-token>' --chat-i
 ./start_codex_telegram_session.sh
 ```
 
+For a named instance:
+
+```bash
+./start_codex_telegram_session.sh --instance tools
+```
+
 7. Send a Telegram message to your bot.
 
 The gateway injects it into Codex as:
@@ -300,7 +306,46 @@ These defaults are deliberately configurable because terminal approval UIs can c
 
 The default setup is intentionally one bot, one allowed Telegram chat, and one Codex tmux target.
 
-You can run multiple gateways, but each instance needs its own isolated configuration:
+For multiple bots or sessions, use one named gateway instance per bot/session. Each named instance gets isolated local files and a separate LaunchAgent label.
+
+Example:
+
+```text
+default -> .env.codex-telegram       -> codex:0.0       -> com.codex.COD_telegram_gateway
+tools   -> .env.codex-telegram-tools -> codex-tools:0.0 -> com.codex.COD_telegram_gateway.tools
+deploy  -> .env.codex-telegram-deploy -> codex-deploy:0.0 -> com.codex.COD_telegram_gateway.deploy
+```
+
+Create a separate bot token for each instance through BotFather, then initialize each instance:
+
+```bash
+CODEX_TELEGRAM_INSTANCE=tools \
+python3 COD_telegram_gateway.py init-env --token '<tools-bot-token>' --chat-id '<your-chat-id>'
+
+CODEX_TELEGRAM_INSTANCE=deploy \
+python3 COD_telegram_gateway.py init-env --token '<deploy-bot-token>' --chat-id '<your-chat-id>'
+```
+
+Start each instance:
+
+```bash
+./start_codex_telegram_session.sh --instance tools
+./start_codex_telegram_session.sh --instance deploy
+```
+
+Check an instance:
+
+```bash
+CODEX_TELEGRAM_INSTANCE=tools python3 COD_telegram_gateway.py status
+```
+
+Send through an instance's bot:
+
+```bash
+CODEX_TELEGRAM_INSTANCE=tools python3 COD_telegram_gateway.py send "Tools instance is online."
+```
+
+Each instance needs:
 
 - its own Telegram bot token,
 - its own owner chat ID,
@@ -310,7 +355,7 @@ You can run multiple gateways, but each instance needs its own isolated configur
 - its own event log,
 - its own process manager or LaunchAgent label.
 
-The current bundled LaunchAgent helper is single-instance. For multiple always-on bots, add instance namespacing before running them side by side so callback state, update offsets, logs, and LaunchAgent labels do not collide.
+One bot per instance is the simplest model. A single bot routing multiple Codex sessions is possible, but it requires command or topic routing and more authorization logic.
 
 ## Security Model
 

@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -29,14 +30,30 @@ from xml.sax.saxutils import escape
 
 GATEWAY_ROOT = Path(__file__).resolve().parent
 DEFAULT_CODEX_WORKDIR = Path.home()
-ENV_PATH = Path(os.environ.get("CODEX_TELEGRAM_ENV", GATEWAY_ROOT / ".env.codex-telegram"))
-STATE_PATH = GATEWAY_ROOT / "COD_gateway_state.json"
-EVENTS_PATH = GATEWAY_ROOT / "COD_gateway_events.jsonl"
+
+
+def normalize_instance_name(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if raw in {"", "default"}:
+        return ""
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", raw).strip("-_")
+    if not normalized:
+        raise SystemExit(f"Invalid CODEX_TELEGRAM_INSTANCE: {value!r}")
+    return normalized
+
+
+INSTANCE_NAME = normalize_instance_name(os.environ.get("CODEX_TELEGRAM_INSTANCE"))
+INSTANCE_SUFFIX = f"-{INSTANCE_NAME}" if INSTANCE_NAME else ""
+LAUNCH_AGENT_SUFFIX = f".{INSTANCE_NAME}" if INSTANCE_NAME else ""
+ENV_PATH = Path(os.environ.get("CODEX_TELEGRAM_ENV", GATEWAY_ROOT / f".env.codex-telegram{INSTANCE_SUFFIX}"))
+STATE_PATH = GATEWAY_ROOT / f"COD_gateway_state{INSTANCE_SUFFIX}.json"
+EVENTS_PATH = GATEWAY_ROOT / f"COD_gateway_events{INSTANCE_SUFFIX}.jsonl"
 API = "https://api.telegram.org/bot{token}/{method}"
 MAX_TG_LEN = 3900
-DEFAULT_TMUX_TARGET = "codex:0.0"
+DEFAULT_TMUX_TARGET = f"codex-{INSTANCE_NAME}:0.0" if INSTANCE_NAME else "codex:0.0"
 DEFAULT_TMUX_REQUIRE_COMMAND = "codex"
-LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / "com.codex.COD_telegram_gateway.plist"
+LAUNCH_AGENT_LABEL = f"com.codex.COD_telegram_gateway{LAUNCH_AGENT_SUFFIX}"
+LAUNCH_AGENT_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
 DEFAULT_TYPING_KEEPALIVE_SECONDS = 600
 DEFAULT_TYPING_INTERVAL_SECONDS = 4
 APPROVAL_PROMPT_PATTERNS = (
@@ -89,7 +106,7 @@ def now_iso() -> str:
 
 def log_event(kind: str, data: dict[str, Any]) -> None:
     EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"ts": now_iso(), "kind": kind, **data}
+    payload = {"ts": now_iso(), "kind": kind, "instance": INSTANCE_NAME or "default", **data}
     with EVENTS_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
@@ -550,12 +567,20 @@ def install_launch_agent() -> None:
     script = str(Path(__file__).resolve())
     workdir = str(GATEWAY_ROOT)
     path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+    env_items = [("PATH", path)]
+    if INSTANCE_NAME:
+        env_items.append(("CODEX_TELEGRAM_INSTANCE", INSTANCE_NAME))
+    if "CODEX_TELEGRAM_ENV" in os.environ:
+        env_items.append(("CODEX_TELEGRAM_ENV", str(ENV_PATH)))
+    env_plist = "\n".join(
+        f"        <key>{escape(key)}</key>\n        <string>{escape(value)}</string>" for key, value in env_items
+    )
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.codex.COD_telegram_gateway</string>
+    <string>{escape(LAUNCH_AGENT_LABEL)}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{escape(python)}</string>
@@ -570,17 +595,16 @@ def install_launch_agent() -> None:
     <string>{escape(workdir)}</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key>
-        <string>{escape(path)}</string>
+{env_plist}
     </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/COD_telegram_gateway.log</string>
+    <string>/tmp/{escape(LAUNCH_AGENT_LABEL)}.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/COD_telegram_gateway.log</string>
+    <string>/tmp/{escape(LAUNCH_AGENT_LABEL)}.log</string>
 </dict>
 </plist>
 """
@@ -597,6 +621,7 @@ def start_gateway_for_current_pane() -> None:
 
     update_env_file(
         {
+            "CODEX_TELEGRAM_INSTANCE": INSTANCE_NAME or "default",
             "COD_TELEGRAM_TMUX_TARGET": target,
             "COD_TELEGRAM_TMUX_REQUIRE_COMMAND": tmux_require_command(),
         }
@@ -606,8 +631,8 @@ def start_gateway_for_current_pane() -> None:
     loaded = launchctl("load", str(LAUNCH_AGENT_PATH))
     if loaded.returncode != 0:
         raise SystemExit(f"launchctl load failed: {loaded.stderr.strip() or loaded.stdout.strip()}")
-    log_event("gateway_bound", {"target": target})
-    print(f"Telegram gateway is bound to this Codex tmux pane: {target}")
+    log_event("gateway_bound", {"target": target, "launch_agent_label": LAUNCH_AGENT_LABEL})
+    print(f"Telegram gateway instance `{INSTANCE_NAME or 'default'}` is bound to this Codex tmux pane: {target}")
 
 
 def stop_gateway() -> None:
@@ -620,6 +645,12 @@ def stop_gateway() -> None:
 
 def gateway_status() -> None:
     load_env_file()
+    print(f"instance={INSTANCE_NAME or 'default'}")
+    print(f"env={ENV_PATH}")
+    print(f"state={STATE_PATH}")
+    print(f"events={EVENTS_PATH}")
+    print(f"launch_agent_label={LAUNCH_AGENT_LABEL}")
+    print(f"launch_agent_plist={LAUNCH_AGENT_PATH}")
     print(f"target={tmux_target()}")
     ok, error = ensure_tmux_target(tmux_target())
     print(f"tmux_ready={ok}")
@@ -628,7 +659,8 @@ def gateway_status() -> None:
     listed = launchctl("list")
     line = ""
     for raw in listed.stdout.splitlines():
-        if "com.codex.COD_telegram_gateway" in raw:
+        parts = raw.split()
+        if parts and parts[-1] == LAUNCH_AGENT_LABEL:
             line = raw
             break
     print(f"launch_agent={line or 'not loaded'}")

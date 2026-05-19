@@ -1,7 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SESSION="${COD_TELEGRAM_TMUX_SESSION:-codex}"
+INSTANCE="${CODEX_TELEGRAM_INSTANCE:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --instance)
+      INSTANCE="${2:?Missing value for --instance}"
+      shift 2
+      ;;
+    --instance=*)
+      INSTANCE="${1#--instance=}"
+      shift
+      ;;
+    --help|-h)
+      echo "Usage: $0 [--instance NAME]"
+      echo
+      echo "Default instance uses .env.codex-telegram and tmux session codex."
+      echo "Named instances use .env.codex-telegram-NAME and tmux session codex-NAME."
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: $0 [--instance NAME]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "${INSTANCE}" && "${INSTANCE}" != "default" ]]; then
+  INSTANCE="$(printf '%s' "${INSTANCE}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^[-_]+//; s/[-_]+$//')"
+  if [[ -z "${INSTANCE}" ]]; then
+    echo "Invalid --instance value." >&2
+    exit 1
+  fi
+  export CODEX_TELEGRAM_INSTANCE="${INSTANCE}"
+else
+  INSTANCE=""
+  unset CODEX_TELEGRAM_INSTANCE
+fi
+
+if [[ -n "${INSTANCE}" ]]; then
+  DEFAULT_SESSION="codex-${INSTANCE}"
+else
+  DEFAULT_SESSION="codex"
+fi
+
+SESSION="${COD_TELEGRAM_TMUX_SESSION:-${DEFAULT_SESSION}}"
 WINDOW="${COD_TELEGRAM_TMUX_WINDOW:-0}"
 PANE="${COD_TELEGRAM_TMUX_PANE:-0}"
 TARGET="${SESSION}:${WINDOW}.${PANE}"
@@ -68,6 +112,7 @@ gw.log_event("codex_command", {
     "cwd": cwd,
     "argv": gw.redact_command(argv),
     "runtime_mode": "${CODEX_RUNTIME_MODE}",
+    "instance": "${INSTANCE:-default}",
     "launcher": "start_codex_telegram_session.sh",
 })
 PY
@@ -84,6 +129,7 @@ gw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gw)
 gw.load_env_file()
 gw.update_env_file({
+    "CODEX_TELEGRAM_INSTANCE": "${INSTANCE:-default}",
     "COD_TELEGRAM_TMUX_TARGET": "${TARGET}",
     "COD_TELEGRAM_TMUX_REQUIRE_COMMAND": "codex",
     "CODEX_TELEGRAM_CODEX_MODE": "${CODEX_RUNTIME_MODE}",
@@ -95,10 +141,15 @@ gw.launchctl("unload", str(gw.LAUNCH_AGENT_PATH))
 loaded = gw.launchctl("load", str(gw.LAUNCH_AGENT_PATH))
 if loaded.returncode != 0:
     raise SystemExit(loaded.stderr.strip() or loaded.stdout.strip())
-gw.log_event("gateway_bound", {"target": "${TARGET}", "launcher": "start_codex_telegram_session.sh"})
+gw.log_event("gateway_bound", {
+    "target": "${TARGET}",
+    "instance": "${INSTANCE:-default}",
+    "launch_agent_label": gw.LAUNCH_AGENT_LABEL,
+    "launcher": "start_codex_telegram_session.sh",
+})
 PY
 )
 
-echo "Telegram gateway bound to tmux target ${TARGET}."
+echo "Telegram gateway instance ${INSTANCE:-default} bound to tmux target ${TARGET}."
 echo "Attach/detach normally; detach with Ctrl-b then d."
 exec tmux attach-session -t "${SESSION}"
