@@ -184,9 +184,10 @@ def send_message(
     chat_id: str | None = None,
     reply_markup: dict[str, Any] | None = None,
     parse_mode: str | None = None,
+    use_default_parse_mode: bool = True,
 ) -> None:
     target = chat_id or owner_chat_id()
-    mode = parse_mode or telegram_parse_mode()
+    mode = parse_mode if parse_mode is not None else (telegram_parse_mode() if use_default_parse_mode else None)
     chunks = [text[i : i + MAX_TG_LEN] for i in range(0, len(text), MAX_TG_LEN)] or [""]
     for chunk in chunks:
         params: dict[str, Any] = {"chat_id": target, "text": chunk}
@@ -809,6 +810,9 @@ def main() -> None:
 
     send = sub.add_parser("send")
     send.add_argument("--parse-mode", choices=["MarkdownV2", "HTML"])
+    send.add_argument("--html", action="store_const", const="HTML", dest="parse_mode")
+    send.add_argument("--markdown-v2", action="store_const", const="MarkdownV2", dest="parse_mode")
+    send.add_argument("--plain", action="store_true", help="send without parse_mode, ignoring COD_TELEGRAM_PARSE_MODE")
     send.add_argument("text")
 
     typing = sub.add_parser("typing")
@@ -831,7 +835,11 @@ def main() -> None:
         init_env(args.token, args.chat_id)
     elif args.command == "send":
         load_env_file()
-        send_message(args.text, parse_mode=args.parse_mode)
+        send_message(
+            args.text,
+            parse_mode=None if args.plain else args.parse_mode,
+            use_default_parse_mode=not args.plain,
+        )
     elif args.command == "typing":
         load_env_file()
         send_chat_action(args.action)

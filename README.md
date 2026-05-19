@@ -365,13 +365,12 @@ COD_TELEGRAM_SUBMIT_KEYS=C-m
 
 ## Telegram Formatting
 
-Telegram supports formatted bot messages through `parse_mode`, including `MarkdownV2` and `HTML`. This gateway supports both per message:
+Telegram supports formatted bot messages through `parse_mode`, including `MarkdownV2` and `HTML`. This gateway supports both per message. For everyday formatted operator messages, use the `--html` shortcut:
 
 ```bash
-python3 COD_telegram_gateway.py send --parse-mode HTML '<b>Done</b>'
-python3 COD_telegram_gateway.py send --parse-mode MarkdownV2 '*Done*'
-./codex-telegram send tools --parse-mode HTML '<b>Done</b>'
-./codex-telegram send tools --parse-mode MarkdownV2 '*Done*'
+python3 COD_telegram_gateway.py send --html '<b>Done</b>'
+./codex-telegram send tools --html '<b>Tools instance is online.</b>'
+./codex-telegram send tools --markdown-v2 '*Tools instance is online*'
 ```
 
 Leave `COD_TELEGRAM_PARSE_MODE` unset by default unless you have tested your formatting. Plain text is the safest global setting.
@@ -383,6 +382,13 @@ COD_TELEGRAM_PARSE_MODE=HTML
 ```
 
 HTML is usually less fragile for Codex replies because ordinary punctuation does not need the same broad escaping that MarkdownV2 requires. Escape literal `&`, `<`, and `>` as `&amp;`, `&lt;`, and `&gt;` when sending them as plain text in HTML mode.
+
+If you set a default parse mode and need to force one plain-text send, use `--plain`:
+
+```bash
+python3 COD_telegram_gateway.py send --plain 'Plain text, no Telegram parsing.'
+./codex-telegram send tools --plain 'Plain text, no Telegram parsing.'
+```
 
 MarkdownV2 is useful for deliberate one-off messages, but it is strict: characters such as `_`, `*`, `[`, `]`, `(`, `)`, `~`, backticks, `>`, `#`, `+`, `-`, `=`, `|`, `{`, `}`, `.`, and `!` must be escaped when they are meant as plain text. If Telegram rejects a formatted send because entities cannot be parsed, the gateway logs the error and retries the same text without `parse_mode`.
 
@@ -443,7 +449,7 @@ Send through an instance's bot:
 Send one formatted message:
 
 ```bash
-./codex-telegram send tools --parse-mode MarkdownV2 '*Tools instance is online*'
+./codex-telegram send tools --html '<b>Tools instance is online.</b>'
 ```
 
 Each instance needs:
