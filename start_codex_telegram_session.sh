@@ -87,6 +87,7 @@ CODEX_ARGS=(
 GATEWAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATEWAY="${GATEWAY_DIR}/COD_telegram_gateway.py"
 PYTHON="${PYTHON:-$(command -v python3 || true)}"
+CREATED_SESSION=0
 
 if [[ -z "${CODEX_BIN}" ]]; then
   echo "codex was not found. Set CODEX_BIN=/path/to/codex or add codex to PATH." >&2
@@ -106,24 +107,25 @@ fi
 if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
   (
     cd "${GATEWAY_DIR}"
-    "${PYTHON}" - "${GATEWAY}" "${PWD}" "${CODEX_BIN}" "${CODEX_ARGS[@]}" <<'PY'
+    "${PYTHON}" - "${GATEWAY}" "${PWD}" "${CODEX_RUNTIME_MODE}" "${INSTANCE:-default}" "${CODEX_BIN}" "${CODEX_ARGS[@]}" <<'PY'
 import importlib.util
 import sys
 
-gateway, cwd, *argv = sys.argv[1:]
+gateway, cwd, runtime_mode, instance, *argv = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("gw", gateway)
 gw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gw)
 gw.log_event("codex_command", {
     "cwd": cwd,
     "argv": gw.redact_command(argv),
-    "runtime_mode": "${CODEX_RUNTIME_MODE}",
-    "instance": "${INSTANCE:-default}",
+    "runtime_mode": runtime_mode,
+    "instance": instance,
     "launcher": "start_codex_telegram_session.sh",
 })
 PY
   )
   tmux new-session -d -s "${SESSION}" -c "${PWD}" "${CODEX_BIN}" "${CODEX_ARGS[@]}"
+  CREATED_SESSION=1
 fi
 
 (
@@ -155,6 +157,18 @@ gw.log_event("gateway_bound", {
 })
 PY
 )
+
+if [[ "${CREATED_SESSION}" == "1" ]]; then
+  reply_prefix=""
+  if [[ -n "${INSTANCE}" ]]; then
+    reply_prefix="CODEX_TELEGRAM_INSTANCE=${INSTANCE} "
+  fi
+  bootstrap_prompt="You are the Codex session for Telegram gateway instance '${INSTANCE:-default}'. Telegram messages arrive prefixed as [Telegram]. Treat the text after [Telegram] exactly like the user typed it in the TUI. For final answers to Telegram, run: ${reply_prefix}${PYTHON} ${GATEWAY} send \"<reply>\". Keep Telegram replies concise unless the task requires detail. Do not wait for terminal input when a Telegram message arrives."
+  printf '%s' "${bootstrap_prompt}" | tmux load-buffer -b "codex_telegram_bootstrap_${SESSION}" -
+  tmux paste-buffer -b "codex_telegram_bootstrap_${SESSION}" -t "${TARGET}"
+  tmux send-keys -t "${TARGET}" C-m
+  tmux delete-buffer -b "codex_telegram_bootstrap_${SESSION}"
+fi
 
 echo "Telegram gateway instance ${INSTANCE:-default} bound to tmux target ${TARGET}."
 if [[ "${NO_ATTACH}" == "1" ]]; then
