@@ -5,7 +5,9 @@ codex_telegram_instances.json
 
 # Runtime state and logs
 COD_gateway_events.jsonl
+COD_gateway_events-*.jsonl
 COD_gateway_state.json
+COD_gateway_state-*.json
 *.log
 
 # Python caches
@@ -14,6 +16,7 @@ __pycache__/
 
 # Installed/generated local launch agent
 com.codex.COD_telegram_gateway.plist
+com.codex.COD_telegram_gateway.*.plist
 
 # Private operator docs for a local deployment
 AGENTS.md
