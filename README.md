@@ -8,7 +8,9 @@ Created by F.B. "Rusty" Walker, IV and released as open source under the MIT Lic
 
 ## Why This Exists
 
-Running a new `codex exec` process for every Telegram message loses conversational and terminal context. This project keeps one Codex process alive inside `tmux` and routes Telegram messages into that same pane.
+Codex is strongest when it is running where the work already lives: in a real terminal, inside the workspace, with the same context and tools you use at the keyboard. This project adds a small Telegram control surface to that local workflow, so you can keep operating the same terminal Codex session when you step away from the host machine.
+
+Telegram is already a common control channel for remote agents, status updates, and quick approvals. This gateway lets Telegram participate in the same live Codex session without turning your codebase, credentials, or terminal state over to a hosted runtime.
 
 That means you can:
 
@@ -17,6 +19,26 @@ That means you can:
 - send instructions from Telegram,
 - receive final answers back in Telegram,
 - keep the same Codex session and working directory.
+
+## Related Projects
+
+This is not the only Telegram-to-Codex bridge. Other open-source projects take different approaches, including SDK-based sessions, Node.js runtimes, multi-agent orchestration, richer media handling, or multi-pane dashboards.
+
+This repo is intentionally smaller:
+
+- local Python with no third-party runtime dependencies,
+- one allow-listed Telegram chat,
+- one persistent `tmux` Codex pane,
+- no exposed HTTP server,
+- macOS LaunchAgent helpers for always-on local use,
+- explicit support for Telegram permission buttons and Stark/YOLO/read-only launch modes.
+
+If you need multi-user routing, SDK session management, voice transcription, file workflows, or agent dashboards, compare this project with alternatives such as:
+
+- CodexClaw: https://github.com/MackDing/CodexClaw
+- HeyAgent: https://github.com/gergomiklos/heyagent
+- TeleCodex: https://github.com/benedict2310/telecodex
+- CCGram and similar tmux-based bridges discussed in the Codex community
 
 ## Features
 
@@ -56,6 +78,19 @@ GitHub: https://github.com/fbwalker4/codex-telegram-tmux-gateway
 
 ## Quick Start
 
+### Let Codex Install It For You
+
+If you already have Codex running on the machine where you want the gateway installed, you can give Codex this prompt:
+
+```text
+Install codex-telegram-tmux-gateway for me from:
+https://github.com/fbwalker4/codex-telegram-tmux-gateway
+
+Use the README. Do not create a new GitHub repository. Clone or update the existing package only. Set it up so Telegram messages go into one persistent Codex tmux session. Ask me for my Telegram bot token and owner chat ID if they are not already available. Keep secrets out of git. Use Stark mode by default.
+```
+
+### Manual Install
+
 1. Clone the repository.
 
 ```bash
@@ -63,7 +98,41 @@ git clone https://github.com/fbwalker4/codex-telegram-tmux-gateway.git
 cd codex-telegram-tmux-gateway
 ```
 
-2. Create your local env file.
+2. Create a Telegram bot token.
+
+- In Telegram, open the official `@BotFather`. Telegram documents BotFather as the tool for creating and managing bots: https://core.telegram.org/bots/features#botfather
+- Send `/newbot`.
+- Choose a display name.
+- Choose a bot username ending in `bot`, such as `my_codex_gateway_bot`.
+- Copy the token BotFather gives you.
+
+Treat the token like a password. Anyone with that token can control your bot.
+
+3. Start a chat with your new bot.
+
+- Open the bot you just created.
+- Send `/start`.
+- Send one more short message, such as `hello`.
+
+This creates an update that can be used to find your Telegram chat ID.
+
+4. Find your Telegram chat ID.
+
+Replace `<telegram-bot-token>` with the token from BotFather:
+
+```bash
+curl "https://api.telegram.org/bot<telegram-bot-token>/getUpdates"
+```
+
+Look for:
+
+```json
+"chat":{"id":123456789
+```
+
+That number is your `TELEGRAM_OWNER_CHAT_ID`.
+
+5. Create your local env file.
 
 ```bash
 cp .env.example .env.codex-telegram
@@ -80,13 +149,19 @@ COD_TELEGRAM_TMUX_REQUIRE_COMMAND=codex
 CODEX_TELEGRAM_CODEX_MODE=stark
 ```
 
-3. Start a persistent Codex tmux session and bind the gateway.
+Or initialize the env file with:
+
+```bash
+python3 COD_telegram_gateway.py init-env --token '<telegram-bot-token>' --chat-id '<your-chat-id>'
+```
+
+6. Start a persistent Codex tmux session and bind the gateway.
 
 ```bash
 ./start_codex_telegram_session.sh
 ```
 
-4. Send a Telegram message to your bot.
+7. Send a Telegram message to your bot.
 
 The gateway injects it into Codex as:
 
@@ -94,7 +169,7 @@ The gateway injects it into Codex as:
 [Telegram] your message here
 ```
 
-5. Reply to Telegram from Codex with:
+8. Reply to Telegram from Codex with:
 
 ```bash
 python3 COD_telegram_gateway.py send "your reply"
