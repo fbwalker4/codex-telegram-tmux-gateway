@@ -85,6 +85,13 @@ The `start_codex_telegram_session.sh` convenience launcher is written for Unix-l
 
 GitHub: https://github.com/fbwalker4/codex-telegram-tmux-gateway
 
+Project docs:
+
+- [Feature comparison](docs/FEATURE_COMPARISON.md)
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+
 ## Quick Start
 
 ### Simplest Operator Commands
@@ -577,6 +584,12 @@ Do not commit real tokens, private Telegram logs, customer/project notes, or mac
 ## Notes
 
 Telegram typing indicators are temporary. Telegram clients usually display them for only a few seconds per `sendChatAction` call. For long-running work, call `python3 COD_telegram_gateway.py typing` periodically and send concise progress updates.
+
+For development checks, run:
+
+```bash
+make check
+```
 
 ## License
 
