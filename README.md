@@ -23,18 +23,21 @@ That means you can:
 
 ## Related Projects
 
-This is not the only Telegram-to-Codex bridge. Other open-source projects take different approaches, including SDK-based sessions, Node.js runtimes, multi-agent orchestration, richer media handling, or multi-pane dashboards.
+This is not the only Telegram-to-Codex bridge. Other open-source projects take different approaches, including SDK-based sessions, Node.js runtimes, multi-agent orchestration, richer media handling, or dashboards.
 
-This repo is intentionally smaller:
+This repo is intentionally focused:
 
 - local Python with no third-party runtime dependencies,
-- one allow-listed Telegram chat,
-- one persistent `tmux` Codex pane by default, with named multi-session support,
+- one owner chat allow-list per bot instance,
+- one persistent `tmux` Codex pane per bot instance,
+- named instances for running multiple isolated bots and Codex sessions,
 - no exposed HTTP server,
 - macOS LaunchAgent helpers for always-on local use,
 - explicit support for Telegram permission buttons and Stark/YOLO/read-only launch modes.
 
-If you need multi-user routing, SDK session management, voice transcription, file workflows, or agent dashboards, compare this project with alternatives such as:
+The design goal is not to be a hosted agent framework. It is to remote-control real Terminal Codex sessions that are already running on your machine, in your real shell, with your real working directory and tmux continuity.
+
+Other projects in this space include:
 
 - CodexClaw: https://github.com/MackDing/CodexClaw
 - HeyAgent: https://github.com/gergomiklos/heyagent
@@ -44,8 +47,9 @@ If you need multi-user routing, SDK session management, voice transcription, fil
 ## Features
 
 - Telegram Bot API polling with no third-party Python dependencies.
-- Single-chat allow-list via `TELEGRAM_OWNER_CHAT_ID`.
+- Per-instance owner chat allow-list via `TELEGRAM_OWNER_CHAT_ID`.
 - `tmux` injection into persistent Codex panes.
+- Named instance helper for one-bot-per-session operation.
 - Configurable submit keystrokes for Codex TUI paste behavior.
 - Message prefixing as `[Telegram] <message>` so Codex can route replies correctly.
 - Telegram `typing` chat action on receipt.
@@ -98,7 +102,7 @@ Register a bot alias once:
 ./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>' --workdir "$HOME"
 ```
 
-You can do this while the default gateway is running. Starting a named instance does not stop the default session because each instance has a separate tmux session and LaunchAgent label.
+You can do this while another gateway is running. Starting a named instance does not stop other sessions because each instance has a separate tmux session and LaunchAgent label.
 
 For normal use, prefer `restart NAME`. It stops only that named gateway, replaces only that named tmux session, seeds the Codex Telegram reply rule, skips stale queued Telegram updates, and starts polling again.
 
@@ -388,9 +392,9 @@ Official reference: https://core.telegram.org/bots/api#formatting-options
 
 ## Multiple Bots Or Sessions
 
-The default setup is intentionally one bot, one allowed Telegram chat, and one Codex tmux target.
+The default setup is a single bot/session pair: one bot token, one owner chat allow-list, and one Codex tmux target.
 
-For multiple bots or sessions, use one named gateway instance per bot/session. Each named instance gets isolated local files and a separate LaunchAgent label.
+For multiple bots or sessions, use one named gateway instance per bot/session. Each named instance gets isolated local files, its own tmux session, and a separate LaunchAgent label.
 
 Example:
 
