@@ -2,7 +2,7 @@
 
 A small Telegram gateway for controlling persistent Codex tmux sessions from Telegram without losing terminal context.
 
-The gateway polls a Telegram bot, accepts messages only from an allow-listed chat ID, sends Telegram's `typing` indicator as soon as a message is accepted, and injects the message into a configured `tmux` pane as if you typed it in the Codex TUI. The default setup is a single bot/session pair; named instances let you run multiple isolated bots and Codex sessions side by side.
+The gateway polls a Telegram bot, accepts messages only from an allow-listed chat ID, sends Telegram's `typing` indicator as soon as a message is accepted, and injects the message into a configured `tmux` pane as if you typed it in the Codex TUI. The default setup is a single bot/session pair; named instances let you run multiple isolated bots and Codex sessions side by side. Passes images both ways.
 
 Created by F.B. "Rusty" Walker, IV and released as open source under the MIT License.
 
