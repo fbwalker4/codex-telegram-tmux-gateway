@@ -50,7 +50,7 @@ Other projects in this space include:
 - Per-instance owner chat allow-list via `TELEGRAM_OWNER_CHAT_ID`.
 - `tmux` injection into persistent Codex panes.
 - Named instance helper for one-bot-per-session operation.
-- Text and photo replies from the command line.
+- Text replies and outbound photo/image sends from the command line.
 - Inbound Telegram photo and image-file download into per-instance local storage.
 - Configurable submit keystrokes for Codex TUI paste behavior.
 - Message prefixing as `[Telegram] <message>` so Codex can route replies correctly.
@@ -449,14 +449,29 @@ Send through an instance's bot:
 ./codex-telegram send tools "Tools instance is online."
 ```
 
-Send a photo through an instance's bot:
+Send a photo/image out through an instance's bot:
 
 ```bash
 ./codex-telegram photo tools --caption "Tools screenshot" ./screenshot.png
 ./codex-telegram photo tools --html --caption '<b>Tools screenshot</b>' ./screenshot.png
 ```
 
-## Inbound Images
+## Images In And Out
+
+The gateway supports images in both directions:
+
+- inbound: you send a photo or image file to the Telegram bot, and the gateway saves it locally and passes the saved path to Codex;
+- outbound: Codex or the operator sends a local image file back to Telegram with `send-photo` or `./codex-telegram photo`.
+
+Outbound image examples:
+
+```bash
+python3 COD_telegram_gateway.py send-photo --caption "Preview" ./screenshot.png
+python3 COD_telegram_gateway.py send-photo --html --caption '<b>Preview</b>' ./screenshot.png
+./codex-telegram photo tools --caption "Preview" ./screenshot.png
+```
+
+### Inbound Images
 
 You can send a Telegram photo, or an image document with one of these extensions: `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`.
 
@@ -551,12 +566,13 @@ Do not commit real tokens, private Telegram logs, customer/project notes, or mac
 1. `COD_telegram_gateway.py run --mode tmux` polls Telegram with `getUpdates`.
 2. A message from the allow-listed chat is logged locally.
 3. The gateway sends `sendChatAction(action="typing")` to Telegram.
-4. The gateway wraps the message as `[Telegram] <text>`.
-5. It loads that text into a temporary tmux buffer.
-6. It pastes the buffer into the configured tmux pane.
-7. It sends Enter to the pane.
-8. Codex processes the message normally in the existing TUI session.
-9. Codex replies to Telegram by running `COD_telegram_gateway.py send`.
+4. For text messages, the gateway wraps the message as `[Telegram] <text>`.
+5. For image messages, the gateway downloads the image into `COD_gateway_downloads/<instance>/`, validates it, and adds the saved absolute path to the Codex prompt.
+6. It loads the prompt into a temporary tmux buffer.
+7. It pastes the buffer into the configured tmux pane.
+8. It sends the configured submit keys to the pane.
+9. Codex processes the message normally in the existing TUI session.
+10. Codex replies to Telegram by running `COD_telegram_gateway.py send` for text or `COD_telegram_gateway.py send-photo` for images.
 
 ## Notes
 
