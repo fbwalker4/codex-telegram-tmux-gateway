@@ -15,18 +15,19 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  ./codex-telegram add NAME --token TOKEN --chat-id CHAT_ID [--mode stark|yolo|read-only]
+  ./codex-telegram add NAME --token TOKEN --chat-id CHAT_ID [--mode stark|yolo|read-only] [--workdir PATH]
   ./codex-telegram list
   ./codex-telegram start NAME [--attach]
+  ./codex-telegram restart NAME [--attach]
   ./codex-telegram start-all
   ./codex-telegram status [NAME]
-  ./codex-telegram send NAME "message"
+  ./codex-telegram send NAME [--parse-mode MarkdownV2|HTML] "message"
   ./codex-telegram stop NAME
 
 Examples:
   ./codex-telegram add tools --token '123:abc' --chat-id '123456789'
-  ./codex-telegram start tools
-  ./codex-telegram start-all
+  ./codex-telegram restart tools
+  ./codex-telegram status tools
 EOF
 }
 
@@ -39,6 +40,7 @@ write_env() {
   local token="$2"
   local chat_id="$3"
   local mode="$4"
+  local workdir="$5"
   local env_file="${ROOT}/.env.codex-telegram"
   local session="codex"
   if [[ "${name}" != "default" ]]; then
@@ -52,8 +54,10 @@ write_env() {
     echo "TELEGRAM_OWNER_CHAT_ID=${chat_id}"
     echo "CODEX_TELEGRAM_INSTANCE=${name}"
     echo "CODEX_TELEGRAM_CODEX_MODE=${mode}"
+    echo "CODEX_TELEGRAM_CODEX_WORKDIR=${workdir}"
     echo "COD_TELEGRAM_TMUX_TARGET=${session}:0.0"
     echo "COD_TELEGRAM_TMUX_REQUIRE_COMMAND=codex"
+    echo "COD_TELEGRAM_SUBMIT_KEYS=C-m,C-m"
     echo "COD_TELEGRAM_TYPING_KEEPALIVE_SECONDS=600"
     echo "COD_TELEGRAM_TYPING_INTERVAL_SECONDS=4"
   } > "${env_file}"
@@ -83,6 +87,7 @@ case "${cmd}" in
     token=""
     chat_id=""
     mode="stark"
+    workdir="${HOME}"
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --token)
@@ -109,6 +114,14 @@ case "${cmd}" in
           mode="${1#--mode=}"
           shift
           ;;
+        --workdir)
+          workdir="${2:?Missing value for --workdir}"
+          shift 2
+          ;;
+        --workdir=*)
+          workdir="${1#--workdir=}"
+          shift
+          ;;
         *)
           echo "Unknown add argument: $1" >&2
           exit 1
@@ -119,8 +132,8 @@ case "${cmd}" in
       echo "add requires --token and --chat-id." >&2
       exit 1
     fi
-    write_env "${name}" "${token}" "${chat_id}" "${mode}"
-    registry_py add "${name}" "${mode}" <<'PY'
+    write_env "${name}" "${token}" "${chat_id}" "${mode}" "${workdir}"
+    registry_py add "${name}" "${mode}" "${workdir}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -128,11 +141,12 @@ from pathlib import Path
 registry = Path(sys.argv[1])
 name = sys.argv[3]
 mode = sys.argv[4]
+workdir = sys.argv[5]
 try:
     data = json.loads(registry.read_text())
 except FileNotFoundError:
     data = {"instances": {}}
-data.setdefault("instances", {})[name] = {"mode": mode}
+data.setdefault("instances", {})[name] = {"mode": mode, "workdir": workdir}
 registry.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 PY
     chmod 600 "${REGISTRY}"
@@ -155,7 +169,7 @@ if not instances:
     print("No saved instances.")
 else:
     for name, config in sorted(instances.items()):
-        print(f"{name}\tmode={config.get('mode', 'stark')}")
+        print(f"{name}\tmode={config.get('mode', 'stark')}\tworkdir={config.get('workdir', '')}")
 PY
     ;;
 
@@ -166,6 +180,25 @@ PY
       exit 1
     fi
     shift || true
+    if [[ "${1:-}" == "--attach" ]]; then
+      exec "${LAUNCHER}" --instance "${name}"
+    fi
+    "${LAUNCHER}" --instance "${name}" --no-attach
+    ;;
+
+  restart)
+    name="$(normalize_name "${1:-}")"
+    if [[ -z "${name}" ]]; then
+      echo "Missing NAME." >&2
+      exit 1
+    fi
+    shift || true
+    CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" stop-gateway 2>/dev/null || true
+    session="codex"
+    if [[ "${name}" != "default" ]]; then
+      session="codex-${name}"
+    fi
+    tmux kill-session -t "${session}" 2>/dev/null || true
     if [[ "${1:-}" == "--attach" ]]; then
       exec "${LAUNCHER}" --instance "${name}"
     fi
@@ -209,11 +242,31 @@ PY
       exit 1
     fi
     shift
+    parse_mode=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --parse-mode)
+          parse_mode="${2:?Missing value for --parse-mode}"
+          shift 2
+          ;;
+        --parse-mode=*)
+          parse_mode="${1#--parse-mode=}"
+          shift
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
     if [[ $# -lt 1 ]]; then
       echo "Missing message." >&2
       exit 1
     fi
-    CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send "$*"
+    if [[ -n "${parse_mode}" ]]; then
+      CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send --parse-mode "${parse_mode}" "$*"
+    else
+      CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send "$*"
+    fi
     ;;
 
   stop)

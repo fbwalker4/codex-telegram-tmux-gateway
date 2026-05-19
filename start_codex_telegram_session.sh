@@ -45,6 +45,30 @@ else
   unset CODEX_TELEGRAM_INSTANCE
 fi
 
+GATEWAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${CODEX_TELEGRAM_ENV:-${GATEWAY_DIR}/.env.codex-telegram}"
+if [[ -n "${INSTANCE}" ]]; then
+  ENV_FILE="${CODEX_TELEGRAM_ENV:-${GATEWAY_DIR}/.env.codex-telegram-${INSTANCE}}"
+fi
+
+load_instance_env() {
+  local env_file="$1"
+  [[ -f "${env_file}" ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" == *"="* ]] || continue
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="$(printf '%s' "${key}" | xargs)"
+    [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    if [[ -z "${!key+x}" ]]; then
+      export "${key}=${value}"
+    fi
+  done < "${env_file}"
+}
+
+load_instance_env "${ENV_FILE}"
+
 if [[ -n "${INSTANCE}" ]]; then
   DEFAULT_SESSION="codex-${INSTANCE}"
 else
@@ -55,6 +79,7 @@ SESSION="${COD_TELEGRAM_TMUX_SESSION:-${DEFAULT_SESSION}}"
 WINDOW="${COD_TELEGRAM_TMUX_WINDOW:-0}"
 PANE="${COD_TELEGRAM_TMUX_PANE:-0}"
 TARGET="${SESSION}:${WINDOW}.${PANE}"
+CODEX_WORKDIR="${CODEX_TELEGRAM_CODEX_WORKDIR:-${PWD}}"
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
 CODEX_RUNTIME_MODE="${CODEX_TELEGRAM_CODEX_MODE:-stark}"
 case "${CODEX_RUNTIME_MODE}" in
@@ -84,10 +109,73 @@ CODEX_ARGS=(
   "--sandbox" "${CODEX_SANDBOX}"
   "--ask-for-approval" "${CODEX_APPROVAL_POLICY}"
 )
-GATEWAY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATEWAY="${GATEWAY_DIR}/COD_telegram_gateway.py"
 PYTHON="${PYTHON:-$(command -v python3 || true)}"
 CREATED_SESSION=0
+
+capture_target() {
+  tmux capture-pane -p -S -80 -t "${TARGET}" 2>/dev/null || true
+}
+
+wait_for_pane_text() {
+  local pattern="$1"
+  local timeout="${2:-30}"
+  local end=$((SECONDS + timeout))
+  while (( SECONDS < end )); do
+    if capture_target | grep -Fqi -- "${pattern}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_codex_ready() {
+  local timeout="${1:-60}"
+  local end=$((SECONDS + timeout))
+  while (( SECONDS < end )); do
+    local pane
+    pane="$(capture_target)"
+    if printf '%s' "${pane}" | grep -Fq "Do you trust the contents of this directory?"; then
+      tmux send-keys -t "${TARGET}" C-m
+      sleep 2
+      continue
+    fi
+    if printf '%s' "${pane}" | grep -Fq "› "; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_codex_idle() {
+  local timeout="${1:-90}"
+  local end=$((SECONDS + timeout))
+  while (( SECONDS < end )); do
+    local pane
+    pane="$(capture_target)"
+    if ! printf '%s' "${pane}" | grep -Fq "• Working ("; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+send_submit_keys() {
+  local keys="${COD_TELEGRAM_SUBMIT_KEYS:-C-m,C-m}"
+  local key
+  local old_ifs="${IFS}"
+  IFS=','
+  for key in ${keys}; do
+    key="$(printf '%s' "${key}" | xargs)"
+    [[ -z "${key}" ]] && continue
+    tmux send-keys -t "${TARGET}" "${key}"
+    sleep 0.15
+  done
+  IFS="${old_ifs}"
+}
 
 if [[ -z "${CODEX_BIN}" ]]; then
   echo "codex was not found. Set CODEX_BIN=/path/to/codex or add codex to PATH." >&2
@@ -104,10 +192,27 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ ! -d "${CODEX_WORKDIR}" ]]; then
+  echo "Configured Codex workdir does not exist: ${CODEX_WORKDIR}" >&2
+  exit 1
+fi
+
+(
+  cd "${GATEWAY_DIR}"
+  "${PYTHON}" - <<PY
+import importlib.util
+spec = importlib.util.spec_from_file_location("gw", "${GATEWAY}")
+gw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gw)
+gw.load_env_file()
+gw.launchctl("unload", str(gw.LAUNCH_AGENT_PATH))
+PY
+) >/dev/null 2>&1 || true
+
 if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
   (
     cd "${GATEWAY_DIR}"
-    "${PYTHON}" - "${GATEWAY}" "${PWD}" "${CODEX_RUNTIME_MODE}" "${INSTANCE:-default}" "${CODEX_BIN}" "${CODEX_ARGS[@]}" <<'PY'
+    "${PYTHON}" - "${GATEWAY}" "${CODEX_WORKDIR}" "${CODEX_RUNTIME_MODE}" "${INSTANCE:-default}" "${CODEX_BIN}" "${CODEX_ARGS[@]}" <<'PY'
 import importlib.util
 import sys
 
@@ -124,8 +229,26 @@ gw.log_event("codex_command", {
 })
 PY
   )
-  tmux new-session -d -s "${SESSION}" -c "${PWD}" "${CODEX_BIN}" "${CODEX_ARGS[@]}"
+  tmux new-session -d -s "${SESSION}" -c "${CODEX_WORKDIR}" "${CODEX_BIN}" "${CODEX_ARGS[@]}"
   CREATED_SESSION=1
+fi
+
+if [[ "${CREATED_SESSION}" == "1" ]]; then
+  if ! wait_for_codex_ready 90; then
+    echo "Codex session ${SESSION} did not become ready in time." >&2
+    exit 1
+  fi
+
+  reply_prefix=""
+  if [[ -n "${INSTANCE}" ]]; then
+    reply_prefix="CODEX_TELEGRAM_INSTANCE=${INSTANCE} "
+  fi
+  bootstrap_prompt="You are the Codex session for Telegram gateway instance '${INSTANCE:-default}'. Telegram messages arrive prefixed as [Telegram]. Treat the text after [Telegram] exactly like the user typed it in the TUI. For final answers to Telegram, run: ${reply_prefix}${PYTHON} ${GATEWAY} send \"<reply>\". Keep Telegram replies concise unless the task requires detail. Do not wait for terminal input when a Telegram message arrives."
+  printf '%s' "${bootstrap_prompt}" | tmux load-buffer -b "codex_telegram_bootstrap_${SESSION}" -
+  tmux paste-buffer -b "codex_telegram_bootstrap_${SESSION}" -t "${TARGET}"
+  send_submit_keys
+  tmux delete-buffer -b "codex_telegram_bootstrap_${SESSION}"
+  wait_for_codex_idle 120 || true
 fi
 
 (
@@ -138,14 +261,16 @@ spec.loader.exec_module(gw)
 gw.load_env_file()
 gw.update_env_file({
     "CODEX_TELEGRAM_INSTANCE": "${INSTANCE:-default}",
+    "CODEX_TELEGRAM_CODEX_WORKDIR": "${CODEX_WORKDIR}",
     "COD_TELEGRAM_TMUX_TARGET": "${TARGET}",
     "COD_TELEGRAM_TMUX_REQUIRE_COMMAND": "codex",
     "CODEX_TELEGRAM_CODEX_MODE": "${CODEX_RUNTIME_MODE}",
     "CODEX_SANDBOX": "${CODEX_SANDBOX}",
     "CODEX_APPROVAL_POLICY": "${CODEX_APPROVAL_POLICY}",
 })
+if "${COD_TELEGRAM_SYNC_OFFSET_ON_START:-1}" == "1":
+    gw.sync_offset()
 gw.install_launch_agent()
-gw.launchctl("unload", str(gw.LAUNCH_AGENT_PATH))
 loaded = gw.launchctl("load", str(gw.LAUNCH_AGENT_PATH))
 if loaded.returncode != 0:
     raise SystemExit(loaded.stderr.strip() or loaded.stdout.strip())
@@ -157,18 +282,6 @@ gw.log_event("gateway_bound", {
 })
 PY
 )
-
-if [[ "${CREATED_SESSION}" == "1" ]]; then
-  reply_prefix=""
-  if [[ -n "${INSTANCE}" ]]; then
-    reply_prefix="CODEX_TELEGRAM_INSTANCE=${INSTANCE} "
-  fi
-  bootstrap_prompt="You are the Codex session for Telegram gateway instance '${INSTANCE:-default}'. Telegram messages arrive prefixed as [Telegram]. Treat the text after [Telegram] exactly like the user typed it in the TUI. For final answers to Telegram, run: ${reply_prefix}${PYTHON} ${GATEWAY} send \"<reply>\". Keep Telegram replies concise unless the task requires detail. Do not wait for terminal input when a Telegram message arrives."
-  printf '%s' "${bootstrap_prompt}" | tmux load-buffer -b "codex_telegram_bootstrap_${SESSION}" -
-  tmux paste-buffer -b "codex_telegram_bootstrap_${SESSION}" -t "${TARGET}"
-  tmux send-keys -t "${TARGET}" C-m
-  tmux delete-buffer -b "codex_telegram_bootstrap_${SESSION}"
-fi
 
 echo "Telegram gateway instance ${INSTANCE:-default} bound to tmux target ${TARGET}."
 if [[ "${NO_ATTACH}" == "1" ]]; then

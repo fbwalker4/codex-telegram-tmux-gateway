@@ -150,6 +150,11 @@ def owner_chat_id() -> str:
     return require_env("TELEGRAM_OWNER_CHAT_ID")
 
 
+def telegram_parse_mode() -> str | None:
+    value = os.environ.get("COD_TELEGRAM_PARSE_MODE", "").strip()
+    return value or None
+
+
 def typing_keepalive_seconds() -> int:
     return int(os.environ.get("COD_TELEGRAM_TYPING_KEEPALIVE_SECONDS", DEFAULT_TYPING_KEEPALIVE_SECONDS))
 
@@ -174,14 +179,39 @@ def api_call(method: str, params: dict[str, Any] | None = None, timeout: int = 9
     return payload
 
 
-def send_message(text: str, chat_id: str | None = None, reply_markup: dict[str, Any] | None = None) -> None:
+def send_message(
+    text: str,
+    chat_id: str | None = None,
+    reply_markup: dict[str, Any] | None = None,
+    parse_mode: str | None = None,
+) -> None:
     target = chat_id or owner_chat_id()
+    mode = parse_mode or telegram_parse_mode()
     chunks = [text[i : i + MAX_TG_LEN] for i in range(0, len(text), MAX_TG_LEN)] or [""]
     for chunk in chunks:
         params: dict[str, Any] = {"chat_id": target, "text": chunk}
         if reply_markup:
             params["reply_markup"] = json.dumps(reply_markup)
-        payload = api_call("sendMessage", params)
+        if mode:
+            params["parse_mode"] = mode
+        effective_mode = mode
+        try:
+            payload = api_call("sendMessage", params)
+        except RuntimeError as exc:
+            if mode and "can't parse entities" in str(exc).lower():
+                params.pop("parse_mode", None)
+                effective_mode = None
+                log_event(
+                    "telegram_parse_mode_fallback",
+                    {
+                        "chat_id": str(target),
+                        "parse_mode": mode,
+                        "error": str(exc)[:240],
+                    },
+                )
+                payload = api_call("sendMessage", params)
+            else:
+                raise
         result = payload.get("result", {})
         log_event(
             "outbound",
@@ -189,6 +219,7 @@ def send_message(text: str, chat_id: str | None = None, reply_markup: dict[str, 
                 "chat_id": str(target),
                 "message_id": result.get("message_id"),
                 "chars": len(chunk),
+                "parse_mode": effective_mode,
                 "preview": chunk[:160],
             },
         )
@@ -350,6 +381,10 @@ def split_tmux_keys(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def tmux_submit_keys() -> list[str]:
+    return split_tmux_keys(os.environ.get("COD_TELEGRAM_SUBMIT_KEYS", "C-m,C-m"))
+
+
 def current_tmux_target() -> str:
     pane = os.environ.get("TMUX_PANE")
     if not pane:
@@ -473,7 +508,7 @@ def inject_tmux_prompt(message: dict[str, Any]) -> str:
         raise RuntimeError(f"tmux paste-buffer failed: {paste.stderr.strip() or paste.stdout.strip()}")
 
     time.sleep(0.2)
-    enter = run_tmux(["send-keys", "-t", target, "C-m"])
+    enter = run_tmux(["send-keys", "-t", target, *tmux_submit_keys()])
     run_tmux(["delete-buffer", "-b", buffer_name])
     if enter.returncode != 0:
         raise RuntimeError(f"tmux send-keys failed: {enter.stderr.strip() or enter.stdout.strip()}")
@@ -773,6 +808,7 @@ def main() -> None:
     init.add_argument("--chat-id", required=True)
 
     send = sub.add_parser("send")
+    send.add_argument("--parse-mode", choices=["MarkdownV2", "HTML"])
     send.add_argument("text")
 
     typing = sub.add_parser("typing")
@@ -795,7 +831,7 @@ def main() -> None:
         init_env(args.token, args.chat_id)
     elif args.command == "send":
         load_env_file()
-        send_message(args.text)
+        send_message(args.text, parse_mode=args.parse_mode)
     elif args.command == "typing":
         load_env_file()
         send_chat_action(args.action)

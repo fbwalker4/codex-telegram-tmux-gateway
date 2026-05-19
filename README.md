@@ -45,6 +45,7 @@ If you need multi-user routing, SDK session management, voice transcription, fil
 - Telegram Bot API polling with no third-party Python dependencies.
 - Single-chat allow-list via `TELEGRAM_OWNER_CHAT_ID`.
 - `tmux` injection into one persistent Codex pane.
+- Configurable submit keystrokes for Codex TUI paste behavior.
 - Message prefixing as `[Telegram] <message>` so Codex can route replies correctly.
 - Telegram `typing` chat action on receipt.
 - Typing keepalive while Codex is working, so Telegram does not look dropped.
@@ -85,8 +86,7 @@ After setup, use the helper command instead of remembering env vars:
 
 ```bash
 ./codex-telegram list
-./codex-telegram start tools
-./codex-telegram start-all
+./codex-telegram restart tools
 ./codex-telegram status tools
 ./codex-telegram send tools "Tools instance is online."
 ```
@@ -94,10 +94,12 @@ After setup, use the helper command instead of remembering env vars:
 Register a bot alias once:
 
 ```bash
-./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>'
+./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>' --workdir "$HOME"
 ```
 
 You can do this while the default gateway is running. Starting a named instance does not stop the default session because each instance has a separate tmux session and LaunchAgent label.
+
+For normal use, prefer `restart NAME`. It stops only that named gateway, replaces only that named tmux session, seeds the Codex Telegram reply rule, skips stale queued Telegram updates, and starts polling again.
 
 This writes ignored local files only:
 
@@ -336,6 +338,36 @@ COD_TELEGRAM_PERMISSION_BUTTONS=0
 
 These defaults are deliberately configurable because terminal approval UIs can change. If your Codex prompt requires different keys, update `.env.codex-telegram`.
 
+## Codex TUI Submit Keys
+
+The gateway pastes Telegram text into the Codex TUI and then sends submit keys through tmux. The default is:
+
+```text
+COD_TELEGRAM_SUBMIT_KEYS=C-m,C-m
+```
+
+Two Enter keystrokes are intentional. Some Codex TUI paste states need the first Enter to finish the pasted input and the second to submit it. If your local Codex TUI submits with one Enter, set:
+
+```text
+COD_TELEGRAM_SUBMIT_KEYS=C-m
+```
+
+## Telegram Formatting
+
+Telegram supports formatted bot messages through `parse_mode`, including `MarkdownV2` and `HTML`. This gateway supports both per message:
+
+```bash
+python3 COD_telegram_gateway.py send --parse-mode MarkdownV2 '*Done*'
+python3 COD_telegram_gateway.py send --parse-mode HTML '<b>Done</b>'
+./codex-telegram send tools --parse-mode MarkdownV2 '*Done*'
+```
+
+Leave `COD_TELEGRAM_PARSE_MODE` unset by default. MarkdownV2 is strict: characters such as `_`, `*`, `[`, `]`, `(`, `)`, `~`, backticks, `>`, `#`, `+`, `-`, `=`, `|`, `{`, `}`, `.`, and `!` must be escaped when they are meant as plain text. If Telegram rejects a formatted send because entities cannot be parsed, the gateway logs the error and retries the same text without `parse_mode`.
+
+Telegram bot messages do not support arbitrary colored text. Use emoji, status symbols, custom emoji where available, or code/pre blocks for visual distinction.
+
+Official reference: https://core.telegram.org/bots/api#formatting-options
+
 ## Multiple Bots Or Sessions
 
 The default setup is intentionally one bot, one allowed Telegram chat, and one Codex tmux target.
@@ -353,18 +385,22 @@ deploy  -> .env.codex-telegram-deploy -> codex-deploy:0.0 -> com.codex.COD_teleg
 Create a separate bot token for each instance through BotFather, then initialize each instance:
 
 ```bash
-./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>'
-./codex-telegram add deploy --token '<deploy-bot-token>' --chat-id '<your-chat-id>'
+./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>' --mode yolo --workdir "$HOME"
+./codex-telegram add deploy --token '<deploy-bot-token>' --chat-id '<your-chat-id>' --mode stark --workdir "$HOME"
 ```
 
-Start each instance:
+Restart each instance:
 
 ```bash
-./codex-telegram start tools
-./codex-telegram start deploy
+./codex-telegram restart tools
+./codex-telegram restart deploy
 ```
 
-Or start all saved instances:
+`restart NAME` is the recommended daily-use command. It stops only that instance's LaunchAgent, kills only that instance's tmux session, boots a fresh Codex pane in the saved workdir and mode, seeds the Telegram reply rule, skips stale queued Telegram updates for that bot, and then starts polling.
+
+`start NAME` reuses an existing tmux session when one already exists. That is useful when you intentionally want to preserve the current pane.
+
+Advanced: start all saved instances at once:
 
 ```bash
 ./codex-telegram start-all
@@ -382,6 +418,12 @@ Send through an instance's bot:
 ./codex-telegram send tools "Tools instance is online."
 ```
 
+Send one formatted message:
+
+```bash
+./codex-telegram send tools --parse-mode MarkdownV2 '*Tools instance is online*'
+```
+
 Each instance needs:
 
 - its own Telegram bot token,
@@ -393,6 +435,14 @@ Each instance needs:
 - its own process manager or LaunchAgent label.
 
 One bot per instance is the simplest model. A single bot routing multiple Codex sessions is possible, but it requires command or topic routing and more authorization logic.
+
+If something feels stuck:
+
+```bash
+./codex-telegram status tools
+./codex-telegram restart tools
+tmux attach -t codex-tools
+```
 
 ## Security Model
 
