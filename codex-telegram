@@ -22,6 +22,8 @@ Usage:
   ./codex-telegram start-all
   ./codex-telegram status [NAME]
   ./codex-telegram send NAME [--html|--markdown-v2|--plain|--parse-mode MarkdownV2|HTML] "message"
+  ./codex-telegram photo NAME [--caption TEXT] [--html|--markdown-v2|--plain] /path/to/image
+  ./codex-telegram cleanup NAME
   ./codex-telegram stop NAME
 
 Examples:
@@ -284,6 +286,77 @@ PY
     else
       CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send "$*"
     fi
+    ;;
+
+  photo|send-photo)
+    name="$(normalize_name "${1:-}")"
+    if [[ -z "${name}" ]]; then
+      echo "Missing NAME." >&2
+      exit 1
+    fi
+    shift
+    parse_mode=""
+    plain=0
+    caption=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --caption)
+          caption="${2:?Missing value for --caption}"
+          shift 2
+          ;;
+        --caption=*)
+          caption="${1#--caption=}"
+          shift
+          ;;
+        --html)
+          parse_mode="HTML"
+          shift
+          ;;
+        --markdown-v2)
+          parse_mode="MarkdownV2"
+          shift
+          ;;
+        --plain)
+          plain=1
+          shift
+          ;;
+        --parse-mode)
+          parse_mode="${2:?Missing value for --parse-mode}"
+          shift 2
+          ;;
+        --parse-mode=*)
+          parse_mode="${1#--parse-mode=}"
+          shift
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+    if [[ $# -ne 1 ]]; then
+      echo "Usage: ./codex-telegram photo NAME [--caption TEXT] [--html|--markdown-v2|--plain] /path/to/image" >&2
+      exit 1
+    fi
+    args=(send-photo)
+    if [[ -n "${caption}" ]]; then
+      args+=(--caption "${caption}")
+    fi
+    if [[ "${plain}" == "1" ]]; then
+      args+=(--plain)
+    elif [[ -n "${parse_mode}" ]]; then
+      args+=(--parse-mode "${parse_mode}")
+    fi
+    args+=("$1")
+    CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" "${args[@]}"
+    ;;
+
+  cleanup)
+    name="$(normalize_name "${1:-}")"
+    if [[ -z "${name}" ]]; then
+      echo "Missing NAME." >&2
+      exit 1
+    fi
+    CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" cleanup-downloads
     ;;
 
   stop)

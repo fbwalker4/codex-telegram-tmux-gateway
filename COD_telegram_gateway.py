@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -48,8 +49,14 @@ LAUNCH_AGENT_SUFFIX = f".{INSTANCE_NAME}" if INSTANCE_NAME else ""
 ENV_PATH = Path(os.environ.get("CODEX_TELEGRAM_ENV", GATEWAY_ROOT / f".env.codex-telegram{INSTANCE_SUFFIX}"))
 STATE_PATH = GATEWAY_ROOT / f"COD_gateway_state{INSTANCE_SUFFIX}.json"
 EVENTS_PATH = GATEWAY_ROOT / f"COD_gateway_events{INSTANCE_SUFFIX}.jsonl"
+INSTANCE_LABEL = INSTANCE_NAME or "default"
+DOWNLOADS_ROOT = GATEWAY_ROOT / "COD_gateway_downloads"
+DOWNLOADS_DIR = DOWNLOADS_ROOT / INSTANCE_LABEL
 API = "https://api.telegram.org/bot{token}/{method}"
+FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 MAX_TG_LEN = 3900
+DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+DEFAULT_DOWNLOAD_RETENTION_DAYS = 14
 DEFAULT_TMUX_TARGET = f"codex-{INSTANCE_NAME}:0.0" if INSTANCE_NAME else "codex:0.0"
 DEFAULT_TMUX_REQUIRE_COMMAND = "codex"
 LAUNCH_AGENT_LABEL = f"com.codex.COD_telegram_gateway{LAUNCH_AGENT_SUFFIX}"
@@ -61,6 +68,13 @@ APPROVAL_PROMPT_REQUIRED_PATTERNS = (
     "› 1. yes, proceed",
     "press enter to confirm or esc to cancel",
 )
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+IMAGE_MIME_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 def load_env_file(path: Path = ENV_PATH) -> None:
@@ -167,6 +181,14 @@ def permission_buttons_enabled() -> bool:
     return os.environ.get("COD_TELEGRAM_PERMISSION_BUTTONS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def max_image_bytes() -> int:
+    return int(os.environ.get("COD_TELEGRAM_MAX_IMAGE_BYTES", str(DEFAULT_MAX_IMAGE_BYTES)))
+
+
+def download_retention_days() -> int:
+    return int(os.environ.get("COD_TELEGRAM_DOWNLOAD_RETENTION_DAYS", str(DEFAULT_DOWNLOAD_RETENTION_DAYS)))
+
+
 def api_call(method: str, params: dict[str, Any] | None = None, timeout: int = 90) -> dict[str, Any]:
     data = None
     if params is not None:
@@ -177,6 +199,147 @@ def api_call(method: str, params: dict[str, Any] | None = None, timeout: int = 9
     if not payload.get("ok"):
         raise RuntimeError(json.dumps(payload, ensure_ascii=False))
     return payload
+
+
+def api_upload(
+    method: str,
+    fields: dict[str, Any],
+    file_field: str,
+    file_path: Path,
+    timeout: int = 90,
+) -> dict[str, Any]:
+    boundary = f"----codex-telegram-{hashlib.sha256(str(time.time()).encode()).hexdigest()[:24]}"
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    body = bytearray()
+
+    for key, value in fields.items():
+        if value is None:
+            continue
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        body.extend(str(value).encode("utf-8"))
+        body.extend(b"\r\n")
+
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{file_path.name}"\r\n'
+            f"Content-Type: {mime_type}\r\n\r\n"
+        ).encode("utf-8")
+    )
+    body.extend(file_path.read_bytes())
+    body.extend(b"\r\n")
+    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+    req = urllib.request.Request(
+        API.format(token=bot_token(), method=method),
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if not payload.get("ok"):
+        raise RuntimeError(json.dumps(payload, ensure_ascii=False))
+    return payload
+
+
+def sanitize_user_text(value: str) -> str:
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join(ch for ch in value if ch == "\n" or ch == "\t" or ord(ch) >= 32)
+
+
+def image_extension_from_magic(data: bytes) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def image_extension_for_attachment(attachment: dict[str, Any], telegram_file_path: str | None = None) -> str | None:
+    candidates = [
+        Path(str(attachment.get("file_name") or "")).suffix.lower(),
+        Path(str(telegram_file_path or "")).suffix.lower(),
+        IMAGE_MIME_EXTENSIONS.get(str(attachment.get("mime_type") or "").lower(), ""),
+    ]
+    for ext in candidates:
+        if ext in ALLOWED_IMAGE_EXTENSIONS:
+            return ".jpg" if ext == ".jpeg" else ext
+    return ".jpg" if attachment.get("kind") == "photo" else None
+
+
+def generated_download_name(message: dict[str, Any], attachment: dict[str, Any], ext: str, index: int) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    unique = re.sub(r"[^A-Za-z0-9_-]+", "", str(attachment.get("file_unique_id") or ""))[:32]
+    if not unique:
+        unique = hashlib.sha256(str(attachment.get("file_id") or index).encode("utf-8")).hexdigest()[:16]
+    return f"{stamp}_{message['message_id']}_{index}_{unique}{ext}"
+
+
+def validate_attachment_metadata(attachment: dict[str, Any]) -> tuple[bool, str]:
+    size = int(attachment.get("file_size") or 0)
+    if size and size > max_image_bytes():
+        return False, f"Image is too large ({size} bytes). Limit is {max_image_bytes()} bytes."
+
+    if attachment.get("kind") == "photo":
+        return True, ""
+
+    mime_type = str(attachment.get("mime_type") or "").lower()
+    ext = Path(str(attachment.get("file_name") or "")).suffix.lower()
+    if not mime_type.startswith("image/"):
+        return False, "Unsupported file type. Please send a Telegram photo or an image file."
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        return False, "Unsupported image extension. Allowed: jpg, jpeg, png, webp, gif."
+    return True, ""
+
+
+def download_telegram_image(message: dict[str, Any], attachment: dict[str, Any], index: int) -> dict[str, Any]:
+    ok, reason = validate_attachment_metadata(attachment)
+    if not ok:
+        raise ValueError(reason)
+
+    payload = api_call("getFile", {"file_id": attachment["file_id"]})
+    file_info = payload.get("result") or {}
+    telegram_file_path = file_info.get("file_path")
+    if not telegram_file_path:
+        raise RuntimeError("Telegram did not return a downloadable file path.")
+
+    ext = image_extension_for_attachment(attachment, telegram_file_path)
+    if not ext:
+        raise ValueError("Unsupported image type. Allowed: jpg, jpeg, png, webp, gif.")
+
+    DOWNLOADS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    final_path = DOWNLOADS_DIR / generated_download_name(message, attachment, ext, index)
+    part_path = final_path.with_suffix(final_path.suffix + ".part")
+    req = urllib.request.Request(FILE_API.format(token=bot_token(), path=urllib.parse.quote(telegram_file_path, safe="/")))
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = resp.read(max_image_bytes() + 1)
+        if len(data) > max_image_bytes():
+            raise ValueError(f"Image is too large after download. Limit is {max_image_bytes()} bytes.")
+        magic_ext = image_extension_from_magic(data[:16])
+        if magic_ext is None:
+            raise ValueError("Downloaded file is not a supported image type.")
+        if ext != magic_ext:
+            final_path = final_path.with_suffix(magic_ext)
+            part_path = final_path.with_suffix(final_path.suffix + ".part")
+        part_path.write_bytes(data)
+        os.chmod(part_path, 0o600)
+        part_path.replace(final_path)
+    finally:
+        if part_path.exists():
+            part_path.unlink()
+
+    return {
+        **attachment,
+        "local_path": str(final_path),
+        "saved_bytes": final_path.stat().st_size,
+        "extension": final_path.suffix.lower(),
+    }
 
 
 def send_message(
@@ -224,6 +387,47 @@ def send_message(
                 "preview": chunk[:160],
             },
         )
+    stop_typing_keepalive(target)
+
+
+def send_photo(
+    path: str,
+    caption: str | None = None,
+    chat_id: str | None = None,
+    parse_mode: str | None = None,
+    use_default_parse_mode: bool = True,
+) -> None:
+    target = chat_id or owner_chat_id()
+    photo_path = Path(path).expanduser().resolve()
+    if not photo_path.is_file():
+        raise SystemExit(f"Photo file not found: {photo_path}")
+    mode = parse_mode if parse_mode is not None else (telegram_parse_mode() if use_default_parse_mode else None)
+    fields: dict[str, Any] = {"chat_id": target}
+    if caption:
+        fields["caption"] = caption[:1024]
+    if mode:
+        fields["parse_mode"] = mode
+    effective_mode = mode
+    try:
+        payload = api_upload("sendPhoto", fields, "photo", photo_path)
+    except RuntimeError as exc:
+        if mode and "can't parse entities" in str(exc).lower():
+            fields.pop("parse_mode", None)
+            effective_mode = None
+            payload = api_upload("sendPhoto", fields, "photo", photo_path)
+        else:
+            raise
+    result = payload.get("result", {})
+    log_event(
+        "outbound_photo",
+        {
+            "chat_id": str(target),
+            "message_id": result.get("message_id"),
+            "path": str(photo_path),
+            "caption_chars": len(caption or ""),
+            "parse_mode": effective_mode,
+        },
+    )
     stop_typing_keepalive(target)
 
 
@@ -343,6 +547,32 @@ def extract_message(update: dict[str, Any]) -> dict[str, Any] | None:
     chat = msg.get("chat") or {}
     sender = msg.get("from") or {}
     text = msg.get("text") or msg.get("caption") or ""
+    attachments: list[dict[str, Any]] = []
+    photos = msg.get("photo") or []
+    if photos:
+        photo = max(photos, key=lambda item: item.get("file_size") or (item.get("width", 0) * item.get("height", 0)))
+        attachments.append(
+            {
+                "kind": "photo",
+                "file_id": photo.get("file_id"),
+                "file_unique_id": photo.get("file_unique_id"),
+                "width": photo.get("width"),
+                "height": photo.get("height"),
+                "file_size": photo.get("file_size"),
+            }
+        )
+    document = msg.get("document") or {}
+    if document:
+        attachments.append(
+            {
+                "kind": "document",
+                "file_id": document.get("file_id"),
+                "file_unique_id": document.get("file_unique_id"),
+                "file_name": document.get("file_name"),
+                "mime_type": document.get("mime_type") or "",
+                "file_size": document.get("file_size"),
+            }
+        )
     return {
         "update_id": update.get("update_id"),
         "message_id": msg.get("message_id"),
@@ -352,11 +582,52 @@ def extract_message(update: dict[str, Any]) -> dict[str, Any] | None:
             p for p in [sender.get("first_name", ""), sender.get("last_name", "")] if p
         ).strip(),
         "text": text,
+        "media_group_id": msg.get("media_group_id"),
+        "attachments": [item for item in attachments if item.get("file_id")],
     }
 
 
+def hydrate_message_attachments(message: dict[str, Any]) -> tuple[bool, str]:
+    saved: list[dict[str, Any]] = []
+    for index, attachment in enumerate(message.get("attachments") or [], start=1):
+        try:
+            saved.append(download_telegram_image(message, attachment, index))
+        except ValueError as exc:
+            log_event("attachment_rejected", {"update_id": message["update_id"], "reason": str(exc)})
+            return False, str(exc)
+    message["attachments"] = saved
+    return True, ""
+
+
 def build_codex_prompt(message: dict[str, Any]) -> str:
-    return f"[Telegram] {message['text']}"
+    text = sanitize_user_text(message.get("text", "")).strip()
+    attachments = message.get("attachments") or []
+    if not attachments:
+        return f"[Telegram] {text}"
+
+    lines = ["[Telegram image message]"]
+    lines.append("Caption:")
+    lines.append('"""')
+    lines.append(text or "(no caption)")
+    lines.append('"""')
+    lines.append("")
+    lines.append("Image attachment(s) saved locally on this host:")
+    for item in attachments:
+        details = []
+        if item.get("mime_type"):
+            details.append(str(item["mime_type"]))
+        if item.get("width") and item.get("height"):
+            details.append(f"{item['width']}x{item['height']}")
+        if item.get("saved_bytes"):
+            details.append(f"{item['saved_bytes']} bytes")
+        suffix = f" ({', '.join(details)})" if details else ""
+        lines.append(f"- {item['local_path']}{suffix}")
+    lines.append("")
+    lines.append(
+        "Please inspect the saved local image path(s) if this Codex runtime supports local image input. "
+        "If you cannot visually inspect them directly, say so and reference the saved path(s)."
+    )
+    return "\n".join(lines)
 
 
 def tmux_target() -> str:
@@ -699,6 +970,20 @@ def gateway_status() -> None:
     print(f"launch_agent={line or 'not loaded'}")
 
 
+def cleanup_downloads() -> None:
+    load_env_file()
+    cutoff = time.time() - (download_retention_days() * 24 * 60 * 60)
+    removed = 0
+    if DOWNLOADS_ROOT.exists():
+        for path in DOWNLOADS_ROOT.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+    print(f"removed {removed} downloaded file(s) older than {download_retention_days()} day(s)")
+
+
 def handle_update(update: dict[str, Any], mode: str) -> None:
     callback = extract_callback(update)
     if callback:
@@ -722,12 +1007,27 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
     log_event("inbound", message)
 
     text = message["text"].strip()
-    if not text:
-        send_message("Received an empty/non-text message. Text handling is wired first.", message["chat_id"])
+    attachments = message.get("attachments") or []
+    if attachments:
+        ok, reason = hydrate_message_attachments(message)
+        if not ok:
+            send_message(reason, message["chat_id"])
+            update_offset(update)
+            return
+        log_event(
+            "attachments_saved",
+            {
+                "update_id": message["update_id"],
+                "count": len(message.get("attachments") or []),
+                "paths": [item["local_path"] for item in message.get("attachments") or []],
+            },
+        )
+    if not text and not message.get("attachments"):
+        send_message("Received an empty or unsupported message. Send text, a Telegram photo, or an image file.", message["chat_id"])
         update_offset(update)
         return
 
-    if text.startswith("/"):
+    if text.startswith("/") and not message.get("attachments"):
         send_message("Received command. For now, send plain text instructions and I will queue or process them.", message["chat_id"])
         update_offset(update)
         return
@@ -815,12 +1115,21 @@ def main() -> None:
     send.add_argument("--plain", action="store_true", help="send without parse_mode, ignoring COD_TELEGRAM_PARSE_MODE")
     send.add_argument("text")
 
+    photo = sub.add_parser("send-photo")
+    photo.add_argument("--parse-mode", choices=["MarkdownV2", "HTML"])
+    photo.add_argument("--html", action="store_const", const="HTML", dest="parse_mode")
+    photo.add_argument("--markdown-v2", action="store_const", const="MarkdownV2", dest="parse_mode")
+    photo.add_argument("--plain", action="store_true", help="send caption without parse_mode")
+    photo.add_argument("--caption", default="")
+    photo.add_argument("path")
+
     typing = sub.add_parser("typing")
     typing.add_argument("--action", default="typing")
 
     sub.add_parser("check-permission")
 
     sub.add_parser("sync-offset")
+    sub.add_parser("cleanup-downloads")
     sub.add_parser("start-gateway")
     sub.add_parser("stop-gateway")
     sub.add_parser("status")
@@ -840,6 +1149,14 @@ def main() -> None:
             parse_mode=None if args.plain else args.parse_mode,
             use_default_parse_mode=not args.plain,
         )
+    elif args.command == "send-photo":
+        load_env_file()
+        send_photo(
+            args.path,
+            caption=args.caption,
+            parse_mode=None if args.plain else args.parse_mode,
+            use_default_parse_mode=not args.plain,
+        )
     elif args.command == "typing":
         load_env_file()
         send_chat_action(args.action)
@@ -848,6 +1165,8 @@ def main() -> None:
         send_permission_prompt_if_needed()
     elif args.command == "sync-offset":
         sync_offset()
+    elif args.command == "cleanup-downloads":
+        cleanup_downloads()
     elif args.command == "start-gateway":
         try:
             start_gateway_for_current_pane()

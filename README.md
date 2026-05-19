@@ -50,6 +50,8 @@ Other projects in this space include:
 - Per-instance owner chat allow-list via `TELEGRAM_OWNER_CHAT_ID`.
 - `tmux` injection into persistent Codex panes.
 - Named instance helper for one-bot-per-session operation.
+- Text and photo replies from the command line.
+- Inbound Telegram photo and image-file download into per-instance local storage.
 - Configurable submit keystrokes for Codex TUI paste behavior.
 - Message prefixing as `[Telegram] <message>` so Codex can route replies correctly.
 - Telegram `typing` chat action on receipt.
@@ -94,6 +96,7 @@ After setup, use the helper command instead of remembering env vars:
 ./codex-telegram restart tools
 ./codex-telegram status tools
 ./codex-telegram send tools "Tools instance is online."
+./codex-telegram photo tools --caption "Tools screenshot" ./screenshot.png
 ```
 
 Register a bot alias once:
@@ -445,6 +448,43 @@ Send through an instance's bot:
 ```bash
 ./codex-telegram send tools "Tools instance is online."
 ```
+
+Send a photo through an instance's bot:
+
+```bash
+./codex-telegram photo tools --caption "Tools screenshot" ./screenshot.png
+./codex-telegram photo tools --html --caption '<b>Tools screenshot</b>' ./screenshot.png
+```
+
+## Inbound Images
+
+You can send a Telegram photo, or an image document with one of these extensions: `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`.
+
+The gateway:
+
+- checks the owner chat allow-list first,
+- rejects unsupported document types,
+- rejects images over `COD_TELEGRAM_MAX_IMAGE_BYTES` before download when Telegram provides a size,
+- downloads the image into `COD_gateway_downloads/<instance>/`,
+- validates image magic bytes after download,
+- writes atomically through a temporary `.part` file,
+- injects the caption and saved absolute image path into Codex.
+
+Images are local files on the host machine. They are ignored by git, but they may contain sensitive information. Default retention is 14 days:
+
+```text
+COD_TELEGRAM_MAX_IMAGE_BYTES=10485760
+COD_TELEGRAM_DOWNLOAD_RETENTION_DAYS=14
+```
+
+Clean old downloads:
+
+```bash
+python3 COD_telegram_gateway.py cleanup-downloads
+./codex-telegram cleanup tools
+```
+
+Telegram albums/media groups are handled as separate image messages in v1.
 
 Send one formatted message:
 
