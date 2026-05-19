@@ -97,6 +97,8 @@ Register a bot alias once:
 ./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>'
 ```
 
+You can do this while the default gateway is running. Starting a named instance does not stop the default session because each instance has a separate tmux session and LaunchAgent label.
+
 This writes ignored local files only:
 
 ```text
