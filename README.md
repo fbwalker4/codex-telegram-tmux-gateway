@@ -264,6 +264,13 @@ Send a Telegram message:
 python3 COD_telegram_gateway.py send "Done."
 ```
 
+Short reply helper for Codex agents:
+
+```bash
+./tg-reply "Heard."
+./tg-reply --html '<b>Done.</b> Checks passed.'
+```
+
 Send a typing indicator manually:
 
 ```bash
@@ -405,6 +412,57 @@ MarkdownV2 is useful for deliberate one-off messages, but it is strict: characte
 Telegram bot messages do not support arbitrary colored text. Use emoji, status symbols, custom emoji where available, or code/pre blocks for visual distinction.
 
 Official reference: https://core.telegram.org/bots/api#formatting-options
+
+## Codex Reply Discipline
+
+When a message is injected into Codex as `[Telegram] <message>`, Codex must send the user-facing answer back through this gateway. A terminal-only final response is not enough because the Telegram user will not see it.
+
+For quick acknowledgements, reply immediately:
+
+```bash
+./tg-reply "Heard."
+```
+
+For normal plain-text replies:
+
+```bash
+./tg-reply "Done. Repo is clean and pushed."
+```
+
+For formatted replies:
+
+```bash
+./tg-reply --html '<b>Done.</b> Repo is clean and pushed.'
+```
+
+For longer tasks, send progress updates through Telegram while working and send the final result through Telegram before ending the Codex turn.
+
+This repo also includes a Codex skill at:
+
+```text
+skills/telegram-reply/SKILL.md
+```
+
+Install or copy that skill into your Codex skills directory if your Codex runtime supports local skills. The skill makes this rule explicit: Telegram-origin requests must be answered through the Telegram gateway, not only in the terminal.
+
+### Recommended Reply Style
+
+For Telegram replies, prefer compact HTML-formatted messages:
+
+- start with a short bold phrase when it helps scanning,
+- keep paragraphs short,
+- use `<code>inline code</code>` for paths, commands, flags, and identifiers,
+- use `<pre><code class="language-shell">...</code></pre>` for shell commands,
+- avoid unnecessary blank lines,
+- use emoji/status symbols only when they clarify state.
+
+Example:
+
+```html
+<b>Done.</b> Repo is clean and pushed at <code>d755d08</code>. Checks passed:
+<pre><code class="language-shell">make check
+git status --short --branch</code></pre>
+```
 
 ## Multiple Bots Or Sessions
 

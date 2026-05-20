@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-/opt/homebrew/bin/python3}"
+GATEWAY="${ROOT}/COD_telegram_gateway.py"
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: tg-reply [--html|--markdown-v2|--plain|--parse-mode MODE] \"message\"" >&2
+  exit 1
+fi
+
+case "${1}" in
+  --html|--markdown-v2|--plain|--parse-mode)
+    exec "${PYTHON}" "${GATEWAY}" send "$@"
+    ;;
+  *)
+    exec "${PYTHON}" "${GATEWAY}" send --plain "$*"
+    ;;
+esac
