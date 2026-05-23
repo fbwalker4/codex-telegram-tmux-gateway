@@ -85,7 +85,7 @@ def load_env_file(path: Path = ENV_PATH) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+        os.environ[key.strip()] = value.strip().strip("'\"")
 
 
 def update_env_file(updates: dict[str, str]) -> None:
@@ -162,6 +162,29 @@ def bot_token() -> str:
 
 def owner_chat_id() -> str:
     return require_env("TELEGRAM_OWNER_CHAT_ID")
+
+
+def current_message_thread_id(chat_id: str | None = None) -> int | None:
+    state = read_state()
+    thread_id = state.get("message_thread_id")
+    if thread_id is None:
+        return None
+    if chat_id is not None and str(state.get("message_thread_chat_id", "")) != str(chat_id):
+        return None
+    return int(thread_id)
+
+
+def record_message_thread(message: dict[str, Any]) -> None:
+    state = read_state()
+    thread_id = message.get("message_thread_id")
+    if thread_id is None:
+        state.pop("message_thread_id", None)
+        state.pop("message_thread_chat_id", None)
+    else:
+        state["message_thread_id"] = int(thread_id)
+        state["message_thread_chat_id"] = str(message["chat_id"])
+    state["updated_at"] = now_iso()
+    write_state(state)
 
 
 def telegram_parse_mode() -> str | None:
@@ -345,15 +368,19 @@ def download_telegram_image(message: dict[str, Any], attachment: dict[str, Any],
 def send_message(
     text: str,
     chat_id: str | None = None,
+    message_thread_id: int | None = None,
     reply_markup: dict[str, Any] | None = None,
     parse_mode: str | None = None,
     use_default_parse_mode: bool = True,
 ) -> None:
     target = chat_id or owner_chat_id()
+    thread_id = message_thread_id if message_thread_id is not None else current_message_thread_id(target)
     mode = parse_mode if parse_mode is not None else (telegram_parse_mode() if use_default_parse_mode else None)
     chunks = [text[i : i + MAX_TG_LEN] for i in range(0, len(text), MAX_TG_LEN)] or [""]
     for chunk in chunks:
         params: dict[str, Any] = {"chat_id": target, "text": chunk}
+        if thread_id is not None:
+            params["message_thread_id"] = thread_id
         if reply_markup:
             params["reply_markup"] = json.dumps(reply_markup)
         if mode:
@@ -381,6 +408,7 @@ def send_message(
             "outbound",
             {
                 "chat_id": str(target),
+                "message_thread_id": thread_id,
                 "message_id": result.get("message_id"),
                 "chars": len(chunk),
                 "parse_mode": effective_mode,
@@ -394,15 +422,19 @@ def send_photo(
     path: str,
     caption: str | None = None,
     chat_id: str | None = None,
+    message_thread_id: int | None = None,
     parse_mode: str | None = None,
     use_default_parse_mode: bool = True,
 ) -> None:
     target = chat_id or owner_chat_id()
+    thread_id = message_thread_id if message_thread_id is not None else current_message_thread_id(target)
     photo_path = Path(path).expanduser().resolve()
     if not photo_path.is_file():
         raise SystemExit(f"Photo file not found: {photo_path}")
     mode = parse_mode if parse_mode is not None else (telegram_parse_mode() if use_default_parse_mode else None)
     fields: dict[str, Any] = {"chat_id": target}
+    if thread_id is not None:
+        fields["message_thread_id"] = thread_id
     if caption:
         fields["caption"] = caption[:1024]
     if mode:
@@ -422,6 +454,7 @@ def send_photo(
         "outbound_photo",
         {
             "chat_id": str(target),
+            "message_thread_id": thread_id,
             "message_id": result.get("message_id"),
             "path": str(photo_path),
             "caption_chars": len(caption or ""),
@@ -431,11 +464,15 @@ def send_photo(
     stop_typing_keepalive(target)
 
 
-def send_chat_action(action: str = "typing", chat_id: str | None = None) -> None:
+def send_chat_action(action: str = "typing", chat_id: str | None = None, message_thread_id: int | None = None) -> None:
     target = chat_id or owner_chat_id()
-    payload = api_call("sendChatAction", {"chat_id": target, "action": action}, timeout=10)
+    thread_id = message_thread_id if message_thread_id is not None else current_message_thread_id(target)
+    params: dict[str, Any] = {"chat_id": target, "action": action}
+    if thread_id is not None:
+        params["message_thread_id"] = thread_id
+    payload = api_call("sendChatAction", params, timeout=10)
     if payload.get("ok"):
-        log_event("chat_action", {"chat_id": str(target), "action": action})
+        log_event("chat_action", {"chat_id": str(target), "message_thread_id": thread_id, "action": action})
 
 
 def start_typing_keepalive(chat_id: str, update_id: int | None = None) -> None:
@@ -531,6 +568,7 @@ def extract_callback(update: dict[str, Any]) -> dict[str, Any] | None:
         "update_id": update.get("update_id"),
         "callback_query_id": callback.get("id"),
         "chat_id": str(chat.get("id", "")),
+        "message_thread_id": message.get("message_thread_id"),
         "from_id": str(sender.get("id", "")),
         "from_name": " ".join(
             p for p in [sender.get("first_name", ""), sender.get("last_name", "")] if p
@@ -577,6 +615,7 @@ def extract_message(update: dict[str, Any]) -> dict[str, Any] | None:
         "update_id": update.get("update_id"),
         "message_id": msg.get("message_id"),
         "chat_id": str(chat.get("id", "")),
+        "message_thread_id": msg.get("message_thread_id"),
         "from_id": str(sender.get("id", "")),
         "from_name": " ".join(
             p for p in [sender.get("first_name", ""), sender.get("last_name", "")] if p
@@ -1004,6 +1043,7 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
         update_offset(update)
         return
 
+    record_message_thread(message)
     log_event("inbound", message)
 
     text = message["text"].strip()

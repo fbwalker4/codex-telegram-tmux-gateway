@@ -61,9 +61,7 @@ load_instance_env() {
     local value="${line#*=}"
     key="$(printf '%s' "${key}" | xargs)"
     [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    if [[ -z "${!key+x}" ]]; then
-      export "${key}=${value}"
-    fi
+    export "${key}=${value}"
   done < "${env_file}"
 }
 
@@ -229,7 +227,18 @@ gw.log_event("codex_command", {
 })
 PY
   )
-  tmux new-session -d -s "${SESSION}" -c "${CODEX_WORKDIR}" "${CODEX_BIN}" "${CODEX_ARGS[@]}"
+  tmux new-session -d -s "${SESSION}" -c "${CODEX_WORKDIR}" \
+    env \
+      CODEX_TELEGRAM_INSTANCE="${INSTANCE:-default}" \
+      TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}" \
+      TELEGRAM_OWNER_CHAT_ID="${TELEGRAM_OWNER_CHAT_ID:-}" \
+      COD_TELEGRAM_TMUX_TARGET="${TARGET}" \
+      COD_TELEGRAM_TMUX_REQUIRE_COMMAND="${COD_TELEGRAM_TMUX_REQUIRE_COMMAND:-codex}" \
+      CODEX_TELEGRAM_CODEX_MODE="${CODEX_RUNTIME_MODE}" \
+      CODEX_TELEGRAM_CODEX_WORKDIR="${CODEX_WORKDIR}" \
+      CODEX_SANDBOX="${CODEX_SANDBOX}" \
+      CODEX_APPROVAL_POLICY="${CODEX_APPROVAL_POLICY}" \
+      "${CODEX_BIN}" "${CODEX_ARGS[@]}"
   CREATED_SESSION=1
 fi
 
