@@ -15,14 +15,14 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  ./codex-telegram add NAME --token TOKEN --chat-id CHAT_ID [--mode stark|yolo|read-only] [--workdir PATH]
+  ./codex-telegram add NAME --token TOKEN --chat-id CHAT_ID [--user-id USER_ID] [--mode stark|yolo|read-only] [--workdir PATH]
   ./codex-telegram list
   ./codex-telegram start NAME [--attach]
   ./codex-telegram restart NAME [--attach]
   ./codex-telegram start-all
   ./codex-telegram status [NAME]
-  ./codex-telegram send NAME [--html|--markdown-v2|--plain|--parse-mode MarkdownV2|HTML] "message"
-  ./codex-telegram photo NAME [--caption TEXT] [--html|--markdown-v2|--plain] /path/to/image
+  ./codex-telegram send NAME [--html|--markdown-v2|--plain|--parse-mode MarkdownV2|HTML] [--message-thread-id ID] "message"
+  ./codex-telegram photo NAME [--caption TEXT] [--html|--markdown-v2|--plain] [--message-thread-id ID] /path/to/image
   ./codex-telegram cleanup NAME
   ./codex-telegram stop NAME
 
@@ -41,8 +41,9 @@ write_env() {
   local name="$1"
   local token="$2"
   local chat_id="$3"
-  local mode="$4"
-  local workdir="$5"
+  local user_id="$4"
+  local mode="$5"
+  local workdir="$6"
   local env_file="${ROOT}/.env.codex-telegram"
   local session="codex"
   if [[ "${name}" != "default" ]]; then
@@ -54,6 +55,9 @@ write_env() {
   {
     echo "TELEGRAM_BOT_TOKEN=${token}"
     echo "TELEGRAM_OWNER_CHAT_ID=${chat_id}"
+    if [[ -n "${user_id}" ]]; then
+      echo "TELEGRAM_OWNER_USER_ID=${user_id}"
+    fi
     echo "CODEX_TELEGRAM_INSTANCE=${name}"
     echo "CODEX_TELEGRAM_CODEX_MODE=${mode}"
     echo "CODEX_TELEGRAM_CODEX_WORKDIR=${workdir}"
@@ -88,6 +92,7 @@ case "${cmd}" in
     shift
     token=""
     chat_id=""
+    user_id=""
     mode="stark"
     workdir="${HOME}"
     while [[ $# -gt 0 ]]; do
@@ -106,6 +111,14 @@ case "${cmd}" in
           ;;
         --chat-id=*)
           chat_id="${1#--chat-id=}"
+          shift
+          ;;
+        --user-id)
+          user_id="${2:?Missing value for --user-id}"
+          shift 2
+          ;;
+        --user-id=*)
+          user_id="${1#--user-id=}"
           shift
           ;;
         --mode)
@@ -134,7 +147,7 @@ case "${cmd}" in
       echo "add requires --token and --chat-id." >&2
       exit 1
     fi
-    write_env "${name}" "${token}" "${chat_id}" "${mode}" "${workdir}"
+    write_env "${name}" "${token}" "${chat_id}" "${user_id}" "${mode}" "${workdir}"
     registry_py add "${name}" "${mode}" "${workdir}" <<'PY'
 import json
 import sys
@@ -246,6 +259,7 @@ PY
     shift
     parse_mode=""
     plain=0
+    thread_id=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --html)
@@ -268,6 +282,14 @@ PY
           parse_mode="${1#--parse-mode=}"
           shift
           ;;
+        --message-thread-id)
+          thread_id="${2:?Missing value for --message-thread-id}"
+          shift 2
+          ;;
+        --message-thread-id=*)
+          thread_id="${1#--message-thread-id=}"
+          shift
+          ;;
         *)
           break
           ;;
@@ -277,14 +299,18 @@ PY
       echo "Missing message." >&2
       exit 1
     fi
+    args=(send)
+    if [[ -n "${thread_id}" ]]; then
+      args+=(--message-thread-id "${thread_id}")
+    fi
     if [[ "${plain}" == "1" ]]; then
-      CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send --plain "$*"
+      CODEX_TELEGRAM_OPERATOR_SEND=1 CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" "${args[@]}" --plain "$*"
       exit $?
     fi
     if [[ -n "${parse_mode}" ]]; then
-      CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send --parse-mode "${parse_mode}" "$*"
+      CODEX_TELEGRAM_OPERATOR_SEND=1 CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" "${args[@]}" --parse-mode "${parse_mode}" "$*"
     else
-      CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" send "$*"
+      CODEX_TELEGRAM_OPERATOR_SEND=1 CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" "${args[@]}" "$*"
     fi
     ;;
 
@@ -298,6 +324,7 @@ PY
     parse_mode=""
     plain=0
     caption=""
+    thread_id=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --caption)
@@ -328,6 +355,14 @@ PY
           parse_mode="${1#--parse-mode=}"
           shift
           ;;
+        --message-thread-id)
+          thread_id="${2:?Missing value for --message-thread-id}"
+          shift 2
+          ;;
+        --message-thread-id=*)
+          thread_id="${1#--message-thread-id=}"
+          shift
+          ;;
         *)
           break
           ;;
@@ -341,13 +376,16 @@ PY
     if [[ -n "${caption}" ]]; then
       args+=(--caption "${caption}")
     fi
+    if [[ -n "${thread_id}" ]]; then
+      args+=(--message-thread-id "${thread_id}")
+    fi
     if [[ "${plain}" == "1" ]]; then
       args+=(--plain)
     elif [[ -n "${parse_mode}" ]]; then
       args+=(--parse-mode "${parse_mode}")
     fi
     args+=("$1")
-    CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" "${args[@]}"
+    CODEX_TELEGRAM_OPERATOR_SEND=1 CODEX_TELEGRAM_INSTANCE="${name}" "${PYTHON}" "${GATEWAY}" "${args[@]}"
     ;;
 
   cleanup)

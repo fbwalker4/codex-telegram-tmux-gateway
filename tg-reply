@@ -5,6 +5,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-/opt/homebrew/bin/python3}"
 GATEWAY="${ROOT}/COD_telegram_gateway.py"
 
+normalize_instance() {
+  local value="${1:-}"
+  if [[ -z "${value}" || "${value}" == "default" ]]; then
+    printf 'default'
+    return 0
+  fi
+  printf '%s' "${value}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^[-_]+//; s/[-_]+$//'
+}
+
 if [[ -z "${CODEX_TELEGRAM_INSTANCE:-}" ]]; then
   inferred=""
   if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
@@ -42,7 +51,7 @@ else
         inferred="${session_name#codex-}"
         ;;
     esac
-    if [[ -n "${inferred}" && "${CODEX_TELEGRAM_INSTANCE}" != "${inferred}" ]]; then
+    if [[ -n "${inferred}" && "$(normalize_instance "${CODEX_TELEGRAM_INSTANCE}")" != "$(normalize_instance "${inferred}")" ]]; then
       echo "Refusing Telegram reply: CODEX_TELEGRAM_INSTANCE=${CODEX_TELEGRAM_INSTANCE} but tmux session ${session_name} implies ${inferred}." >&2
       exit 2
     fi
@@ -50,12 +59,12 @@ else
 fi
 
 if [[ $# -eq 0 ]]; then
-  echo "Usage: tg-reply [--html|--markdown-v2|--plain|--parse-mode MODE] \"message\"" >&2
+  echo "Usage: tg-reply [--html|--markdown-v2|--plain|--parse-mode MODE] [--message-thread-id ID] \"message\"" >&2
   exit 1
 fi
 
 case "${1}" in
-  --html|--markdown-v2|--plain|--parse-mode)
+  --html|--markdown-v2|--plain|--parse-mode|--message-thread-id|--message-thread-id=*)
     exec "${PYTHON}" "${GATEWAY}" send "$@"
     ;;
   *)

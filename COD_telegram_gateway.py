@@ -13,6 +13,8 @@ the repo's .env* rule.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import mimetypes
@@ -52,6 +54,7 @@ LAUNCH_AGENT_SUFFIX = f".{INSTANCE_NAME}" if INSTANCE_NAME else ""
 ENV_PATH = Path(os.environ.get("CODEX_TELEGRAM_ENV", GATEWAY_ROOT / f".env.codex-telegram{INSTANCE_SUFFIX}"))
 STATE_PATH = GATEWAY_ROOT / f"COD_gateway_state{INSTANCE_SUFFIX}.json"
 EVENTS_PATH = GATEWAY_ROOT / f"COD_gateway_events{INSTANCE_SUFFIX}.jsonl"
+STATE_LOCK_PATH = GATEWAY_ROOT / f"COD_gateway_state{INSTANCE_SUFFIX}.lock"
 INSTANCE_LABEL = INSTANCE_NAME or "default"
 DOWNLOADS_ROOT = GATEWAY_ROOT / "COD_gateway_downloads"
 DOWNLOADS_DIR = DOWNLOADS_ROOT / INSTANCE_LABEL
@@ -105,6 +108,10 @@ def outbound_requires_explicit_instance(raw_instance: str | None, configured_nam
     return not (raw_instance or "").strip() and bool(configured_names)
 
 
+def operator_send_enabled() -> bool:
+    return os.environ.get("CODEX_TELEGRAM_OPERATOR_SEND", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def instance_from_tmux_session_name(session_name: str | None) -> str | None:
     session = (session_name or "").strip()
     if not session:
@@ -136,7 +143,7 @@ def current_tmux_instance_hint() -> str | None:
 
 def require_explicit_instance_for_cli_outbound() -> None:
     tmux_hint = current_tmux_instance_hint()
-    if tmux_hint is not None and tmux_hint != INSTANCE_NAME:
+    if tmux_hint is not None and tmux_hint != INSTANCE_NAME and not operator_send_enabled():
         raise SystemExit(
             "Refusing Telegram send: current tmux session implies instance "
             f"{tmux_hint or 'default'}, but this gateway process is bound to "
@@ -164,6 +171,11 @@ def validate_loaded_env_instance() -> None:
             "Gateway instance mismatch: process is bound to "
             f"{INSTANCE_NAME or 'default'} but {ENV_PATH} declares {loaded_instance or 'default'}."
         )
+
+
+def load_and_validate_env(path: Path = ENV_PATH) -> None:
+    load_env_file(path)
+    validate_loaded_env_instance()
 
 
 def update_env_file(updates: dict[str, str]) -> None:
@@ -227,6 +239,17 @@ def write_state(state: dict[str, Any]) -> None:
     tmp.replace(STATE_PATH)
 
 
+@contextmanager
+def state_lock():
+    STATE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with STATE_LOCK_PATH.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -242,7 +265,22 @@ def owner_chat_id() -> str:
     return require_env("TELEGRAM_OWNER_CHAT_ID")
 
 
+def owner_user_id() -> str | None:
+    return os.environ.get("TELEGRAM_OWNER_USER_ID", "").strip() or None
+
+
+def sender_authorized(item: dict[str, Any]) -> bool:
+    if item.get("chat_id") != owner_chat_id():
+        return False
+    required_user = owner_user_id()
+    if required_user:
+        return item.get("from_id") == required_user
+    return item.get("chat_type") == "private"
+
+
 def current_message_thread_id(chat_id: str | None = None) -> int | None:
+    if os.environ.get("COD_TELEGRAM_STICKY_THREADS", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
     state = read_state()
     thread_id = state.get("message_thread_id")
     if thread_id is None:
@@ -253,21 +291,28 @@ def current_message_thread_id(chat_id: str | None = None) -> int | None:
 
 
 def record_message_thread(message: dict[str, Any]) -> None:
-    state = read_state()
-    thread_id = message.get("message_thread_id")
-    if thread_id is None:
-        state.pop("message_thread_id", None)
-        state.pop("message_thread_chat_id", None)
-    else:
-        state["message_thread_id"] = int(thread_id)
-        state["message_thread_chat_id"] = str(message["chat_id"])
-    state["updated_at"] = now_iso()
-    write_state(state)
+    with state_lock():
+        state = read_state()
+        thread_id = message.get("message_thread_id")
+        if thread_id is None:
+            state.pop("message_thread_id", None)
+            state.pop("message_thread_chat_id", None)
+        else:
+            state["message_thread_id"] = int(thread_id)
+            state["message_thread_chat_id"] = str(message["chat_id"])
+        state["updated_at"] = now_iso()
+        write_state(state)
 
 
 def telegram_parse_mode() -> str | None:
     value = os.environ.get("COD_TELEGRAM_PARSE_MODE", "").strip()
     return value or None
+
+
+def optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 def typing_keepalive_seconds() -> int:
@@ -553,67 +598,91 @@ def send_chat_action(action: str = "typing", chat_id: str | None = None, message
         log_event("chat_action", {"chat_id": str(target), "message_thread_id": thread_id, "action": action})
 
 
-def start_typing_keepalive(chat_id: str, update_id: int | None = None) -> None:
-    state = read_state()
+def start_typing_keepalive(chat_id: str, update_id: int | None = None, message_thread_id: int | None = None) -> None:
     now = time.time()
-    state["typing_keepalive"] = {
-        "chat_id": str(chat_id),
-        "update_id": update_id,
-        "started_at": now,
-        "until": now + typing_keepalive_seconds(),
-        "next_at": now,
-    }
-    write_state(state)
+    with state_lock():
+        state = read_state()
+        state["typing_keepalive"] = {
+            "chat_id": str(chat_id),
+            "message_thread_id": message_thread_id,
+            "update_id": update_id,
+            "started_at": now,
+            "until": now + typing_keepalive_seconds(),
+            "next_at": now,
+        }
+        write_state(state)
     refresh_typing_keepalive(force=True)
 
 
 def stop_typing_keepalive(chat_id: str | None = None) -> None:
-    state = read_state()
-    keepalive = state.get("typing_keepalive") or {}
-    if not keepalive:
-        return
-    if chat_id is not None and str(keepalive.get("chat_id")) != str(chat_id):
-        return
-    state.pop("typing_keepalive", None)
-    state["typing_keepalive_stopped_at"] = now_iso()
-    write_state(state)
+    with state_lock():
+        state = read_state()
+        keepalive = state.get("typing_keepalive") or {}
+        if not keepalive:
+            return
+        if chat_id is not None and str(keepalive.get("chat_id")) != str(chat_id):
+            return
+        state.pop("typing_keepalive", None)
+        state["typing_keepalive_stopped_at"] = now_iso()
+        write_state(state)
 
 
 def refresh_typing_keepalive(force: bool = False) -> None:
-    state = read_state()
-    keepalive = state.get("typing_keepalive") or {}
-    if not keepalive:
-        return
-
+    due_keepalive: dict[str, Any] | None = None
     now = time.time()
-    if now >= float(keepalive.get("until", 0)):
-        state.pop("typing_keepalive", None)
-        state["typing_keepalive_expired_at"] = now_iso()
+    with state_lock():
+        state = read_state()
+        keepalive = state.get("typing_keepalive") or {}
+        if not keepalive:
+            return
+
+        if now >= float(keepalive.get("until", 0)):
+            state.pop("typing_keepalive", None)
+            state["typing_keepalive_expired_at"] = now_iso()
+            write_state(state)
+            log_event("typing_keepalive_expired", {"chat_id": str(keepalive.get("chat_id", ""))})
+            return
+
+        if not force and now < float(keepalive.get("next_at", 0)):
+            return
+
+        keepalive["next_at"] = now + typing_interval_seconds()
+        state["typing_keepalive"] = keepalive
         write_state(state)
-        log_event("typing_keepalive_expired", {"chat_id": str(keepalive.get("chat_id", ""))})
-        return
+        due_keepalive = dict(keepalive)
 
-    if not force and now < float(keepalive.get("next_at", 0)):
-        return
-
-    chat_id = str(keepalive.get("chat_id") or owner_chat_id())
+    chat_id = str(due_keepalive.get("chat_id") or owner_chat_id())
+    message_thread_id = optional_int(due_keepalive.get("message_thread_id"))
     try:
-        send_chat_action("typing", chat_id)
-        keepalive["next_at"] = now + typing_interval_seconds()
-        keepalive["last_sent_at"] = now
-        state["typing_keepalive"] = keepalive
-        write_state(state)
+        send_chat_action("typing", chat_id, message_thread_id=message_thread_id)
+        with state_lock():
+            state = read_state()
+            keepalive = state.get("typing_keepalive") or {}
+            if keepalive.get("update_id") == due_keepalive.get("update_id"):
+                keepalive["last_sent_at"] = now
+                state["typing_keepalive"] = keepalive
+                write_state(state)
     except Exception as exc:
-        keepalive["next_at"] = now + typing_interval_seconds()
-        keepalive["last_error"] = str(exc)
-        state["typing_keepalive"] = keepalive
-        write_state(state)
+        with state_lock():
+            state = read_state()
+            keepalive = state.get("typing_keepalive") or {}
+            if keepalive.get("update_id") == due_keepalive.get("update_id"):
+                keepalive["last_error"] = str(exc)
+                state["typing_keepalive"] = keepalive
+                write_state(state)
         log_event("typing_keepalive_error", {"chat_id": chat_id, "error": str(exc)})
 
 
 def typing_keepalive_is_active() -> bool:
     keepalive = (read_state().get("typing_keepalive") or {})
     return bool(keepalive) and time.time() < float(keepalive.get("until", 0))
+
+
+def active_keepalive_route() -> tuple[str | None, int | None]:
+    keepalive = (read_state().get("typing_keepalive") or {})
+    if not keepalive or time.time() >= float(keepalive.get("until", 0)):
+        return None, None
+    return str(keepalive.get("chat_id") or "") or None, optional_int(keepalive.get("message_thread_id"))
 
 
 def get_updates(timeout: int) -> list[dict[str, Any]]:
@@ -629,10 +698,34 @@ def get_updates(timeout: int) -> list[dict[str, Any]]:
 
 
 def update_offset(update: dict[str, Any]) -> None:
-    state = read_state()
-    state["offset"] = int(update["update_id"]) + 1
-    state["updated_at"] = now_iso()
-    write_state(state)
+    with state_lock():
+        state = read_state()
+        state["offset"] = int(update["update_id"]) + 1
+        state["updated_at"] = now_iso()
+        write_state(state)
+
+
+def record_active_task_route(message: dict[str, Any]) -> None:
+    with state_lock():
+        state = read_state()
+        state["active_task_route"] = {
+            "chat_id": str(message["chat_id"]),
+            "message_thread_id": message.get("message_thread_id"),
+            "update_id": message.get("update_id"),
+            "message_id": message.get("message_id"),
+            "started_at": time.time(),
+            "updated_at": now_iso(),
+        }
+        write_state(state)
+
+
+def active_task_route(max_age_seconds: int = 4 * 60 * 60) -> tuple[str | None, int | None]:
+    route = (read_state().get("active_task_route") or {})
+    if not route:
+        return None, None
+    if time.time() - float(route.get("started_at", 0)) > max_age_seconds:
+        return None, None
+    return str(route.get("chat_id") or "") or None, optional_int(route.get("message_thread_id"))
 
 
 def extract_callback(update: dict[str, Any]) -> dict[str, Any] | None:
@@ -646,6 +739,7 @@ def extract_callback(update: dict[str, Any]) -> dict[str, Any] | None:
         "update_id": update.get("update_id"),
         "callback_query_id": callback.get("id"),
         "chat_id": str(chat.get("id", "")),
+        "chat_type": chat.get("type") or "",
         "message_thread_id": message.get("message_thread_id"),
         "from_id": str(sender.get("id", "")),
         "from_name": " ".join(
@@ -693,6 +787,7 @@ def extract_message(update: dict[str, Any]) -> dict[str, Any] | None:
         "update_id": update.get("update_id"),
         "message_id": msg.get("message_id"),
         "chat_id": str(chat.get("id", "")),
+        "chat_type": chat.get("type") or "",
         "message_thread_id": msg.get("message_thread_id"),
         "from_id": str(sender.get("id", "")),
         "from_name": " ".join(
@@ -719,10 +814,33 @@ def hydrate_message_attachments(message: dict[str, Any]) -> tuple[bool, str]:
 def build_codex_prompt(message: dict[str, Any]) -> str:
     text = sanitize_user_text(message.get("text", "")).strip()
     attachments = message.get("attachments") or []
+    thread_id = message.get("message_thread_id")
+    if thread_id is not None:
+        reply_command = (
+            f"CODEX_TELEGRAM_INSTANCE={INSTANCE_NAME or 'default'} "
+            f"{sys.executable or 'python3'} {Path(__file__).resolve()} "
+            f"send --message-thread-id {int(thread_id)} --plain \"<reply>\""
+        )
+        prefix = f"[Telegram thread {thread_id}]"
+    else:
+        reply_command = ""
+        prefix = "[Telegram]"
     if not attachments:
-        return f"[Telegram] {text}"
+        if thread_id is not None:
+            return (
+                f"{prefix}\n"
+                f"message_thread_id: {int(thread_id)}\n"
+                f"Reply command: {reply_command}\n"
+                "User message:\n"
+                f"{text}"
+            )
+        return f"{prefix} {text}"
 
-    lines = ["[Telegram image message]"]
+    lines = ["[Telegram image message]" if thread_id is None else f"{prefix} image message"]
+    if thread_id is not None:
+        lines.append(f"message_thread_id: {int(thread_id)}")
+        lines.append(f"Reply command: {reply_command}")
+        lines.append("")
     lines.append("Caption:")
     lines.append('"""')
     lines.append(text or "(no caption)")
@@ -847,33 +965,41 @@ def approval_keyboard(signature: str) -> dict[str, Any]:
     }
 
 
-def send_permission_prompt_if_needed(target: str | None = None, chat_id: str | None = None) -> None:
+def send_permission_prompt_if_needed(
+    target: str | None = None,
+    chat_id: str | None = None,
+    message_thread_id: int | None = None,
+) -> None:
     if not permission_buttons_enabled():
         return
     target = target or tmux_target()
-    state = read_state()
     pane_text = capture_tmux_text(target)
     signature = approval_prompt_signature(pane_text)
     if not signature:
         return
 
-    pending = state.get("pending_permission") or {}
-    if pending.get("signature") == signature:
-        return
+    with state_lock():
+        state = read_state()
+        pending = state.get("pending_permission") or {}
+        if pending.get("signature") == signature:
+            return
 
-    state["pending_permission"] = {
-        "signature": signature,
-        "target": target,
-        "status": "sent",
-        "created_at": now_iso(),
-    }
-    write_state(state)
+        state["pending_permission"] = {
+            "signature": signature,
+            "target": target,
+            "chat_id": str(chat_id or owner_chat_id()),
+            "message_thread_id": message_thread_id,
+            "status": "sent",
+            "created_at": now_iso(),
+        }
+        write_state(state)
     preview = "\n".join(pane_text.splitlines()[-10:]).strip()
     send_message(
         "Codex is asking for permission.\n\n"
         "Review the terminal prompt before approving. Use Deny if you are unsure.\n\n"
         f"Prompt tail:\n{preview[-1200:]}",
         chat_id=chat_id,
+        message_thread_id=message_thread_id,
         reply_markup=approval_keyboard(signature),
     )
     log_event("permission_prompt_sent", {"target": target, "signature": signature})
@@ -905,7 +1031,7 @@ def inject_tmux_prompt(message: dict[str, Any]) -> str:
     log_event("tmux_injected", {"update_id": message["update_id"], "target": target, "chars": len(prompt)})
     time.sleep(0.8)
     try:
-        send_permission_prompt_if_needed(target, message["chat_id"])
+        send_permission_prompt_if_needed(target, message["chat_id"], optional_int(message.get("message_thread_id")))
     except Exception as exc:
         log_event("permission_watch_error", {"target": target, "error": str(exc)})
     return f"Sent to Codex tmux target `{target}`."
@@ -935,8 +1061,7 @@ def answer_callback(callback_query_id: str, text: str, alert: bool = False) -> N
 
 
 def handle_permission_callback(callback: dict[str, Any]) -> None:
-    allowed = owner_chat_id()
-    if callback["chat_id"] != allowed:
+    if not sender_authorized(callback):
         log_event("ignored_callback", callback)
         answer_callback(callback["callback_query_id"], "Not authorized.", alert=True)
         return
@@ -951,25 +1076,53 @@ def handle_permission_callback(callback: dict[str, Any]) -> None:
         answer_callback(callback["callback_query_id"], "Unknown permission action.", alert=True)
         return
 
-    state = read_state()
-    pending = state.get("pending_permission") or {}
-    if pending.get("signature") != signature:
-        answer_callback(callback["callback_query_id"], "That permission prompt is no longer current.", alert=True)
-        return
-
-    target = pending.get("target") or tmux_target()
     keys = permission_key_sequence(action)
+    with state_lock():
+        state = read_state()
+        pending = state.get("pending_permission") or {}
+        if pending.get("signature") != signature:
+            answer_callback(callback["callback_query_id"], "That permission prompt is no longer current.", alert=True)
+            return
+        if pending.get("status") != "sent":
+            answer_callback(callback["callback_query_id"], "That permission prompt was already handled.", alert=True)
+            return
+        target = pending.get("target") or tmux_target()
+        try:
+            current_signature = approval_prompt_signature(capture_tmux_text(target))
+        except Exception as exc:
+            answer_callback(callback["callback_query_id"], "Could not verify the current tmux prompt.", alert=True)
+            raise RuntimeError(f"tmux permission capture failed: {exc}") from exc
+        if current_signature != signature:
+            answer_callback(callback["callback_query_id"], "The terminal prompt changed before approval could be sent.", alert=True)
+            return
+        pending["status"] = "sending"
+        pending["sending_action"] = action
+        pending["sending_at"] = now_iso()
+        state["pending_permission"] = pending
+        write_state(state)
+
     proc = run_tmux(["send-keys", "-t", target, *keys])
     if proc.returncode != 0:
         answer_callback(callback["callback_query_id"], "Could not send keys to tmux.", alert=True)
         raise RuntimeError(f"tmux permission send-keys failed: {proc.stderr.strip() or proc.stdout.strip()}")
 
-    pending["status"] = action
-    pending["resolved_at"] = now_iso()
-    state["pending_permission"] = pending
-    write_state(state)
+    with state_lock():
+        state = read_state()
+        pending = state.get("pending_permission") or pending
+        if pending.get("signature") != signature or pending.get("status") != "sending":
+            answer_callback(callback["callback_query_id"], "That permission prompt changed before the response was recorded.", alert=True)
+            return
+        pending["status"] = action
+        pending["resolved_at"] = now_iso()
+        state["pending_permission"] = pending
+        write_state(state)
     answer_callback(callback["callback_query_id"], f"Sent: {action.replace('_', ' ')}")
-    send_message(f"Permission response sent to Codex: {action.replace('_', ' ')}", callback["chat_id"])
+    response_thread_id = optional_int(callback.get("message_thread_id") or pending.get("message_thread_id"))
+    send_message(
+        f"Permission response sent to Codex: {action.replace('_', ' ')}",
+        callback["chat_id"],
+        message_thread_id=response_thread_id,
+    )
     log_event("permission_callback", {"target": target, "signature": signature, "action": action, "keys": keys})
 
 
@@ -1032,7 +1185,7 @@ def install_launch_agent() -> None:
 
 
 def start_gateway_for_current_pane() -> None:
-    load_env_file()
+    load_and_validate_env()
     target = current_tmux_target()
     ok, error = ensure_tmux_target(target)
     if not ok:
@@ -1063,7 +1216,7 @@ def stop_gateway() -> None:
 
 
 def gateway_status() -> None:
-    load_env_file()
+    load_and_validate_env()
     print(f"instance={INSTANCE_NAME or 'default'}")
     print(f"env={ENV_PATH}")
     print(f"state={STATE_PATH}")
@@ -1086,7 +1239,7 @@ def gateway_status() -> None:
 
 
 def cleanup_downloads() -> None:
-    load_env_file()
+    load_and_validate_env()
     cutoff = time.time() - (download_retention_days() * 24 * 60 * 60)
     removed = 0
     if DOWNLOADS_ROOT.exists():
@@ -1113,8 +1266,7 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
         update_offset(update)
         return
 
-    allowed = owner_chat_id()
-    if message["chat_id"] != allowed:
+    if not sender_authorized(message):
         log_event("ignored_chat", message)
         update_offset(update)
         return
@@ -1127,7 +1279,7 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
     if attachments:
         ok, reason = hydrate_message_attachments(message)
         if not ok:
-            send_message(reason, message["chat_id"])
+            send_message(reason, message["chat_id"], message_thread_id=optional_int(message.get("message_thread_id")))
             update_offset(update)
             return
         log_event(
@@ -1139,12 +1291,20 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
             },
         )
     if not text and not message.get("attachments"):
-        send_message("Received an empty or unsupported message. Send text, a Telegram photo, or an image file.", message["chat_id"])
+        send_message(
+            "Received an empty or unsupported message. Send text, a Telegram photo, or an image file.",
+            message["chat_id"],
+            message_thread_id=optional_int(message.get("message_thread_id")),
+        )
         update_offset(update)
         return
 
     if text.startswith("/") and not message.get("attachments"):
-        send_message("Received command. For now, send plain text instructions and I will queue or process them.", message["chat_id"])
+        send_message(
+            "Received command. For now, send plain text instructions and I will queue or process them.",
+            message["chat_id"],
+            message_thread_id=optional_int(message.get("message_thread_id")),
+        )
         update_offset(update)
         return
 
@@ -1155,22 +1315,35 @@ def handle_update(update: dict[str, Any], mode: str) -> None:
 
     try:
         if mode == "tmux":
-            start_typing_keepalive(message["chat_id"], message["update_id"])
+            start_typing_keepalive(
+                message["chat_id"],
+                message["update_id"],
+                message_thread_id=optional_int(message.get("message_thread_id")),
+            )
+            record_active_task_route(message)
             inject_tmux_prompt(message)
         else:
             raise RuntimeError(f"Unsupported gateway mode `{mode}`. Only `tmux` and `queue` are allowed.")
     except subprocess.TimeoutExpired:
-        send_message("Codex runner timed out. The message is logged; I need to resume from the host session.", message["chat_id"])
+        send_message(
+            "Codex runner timed out. The message is logged; I need to resume from the host session.",
+            message["chat_id"],
+            message_thread_id=optional_int(message.get("message_thread_id")),
+        )
         log_event("codex_timeout", message)
     except Exception as exc:
-        send_message(f"Gateway received the message, but could not hand it to Codex: {exc}", message["chat_id"])
+        send_message(
+            f"Gateway received the message, but could not hand it to Codex: {exc}",
+            message["chat_id"],
+            message_thread_id=optional_int(message.get("message_thread_id")),
+        )
         log_event("codex_error", {**message, "error": str(exc)})
     finally:
         update_offset(update)
 
 
 def loop(mode: str, timeout: int, once: bool) -> None:
-    load_env_file()
+    load_and_validate_env()
     log_event("gateway_start", {"mode": mode, "once": once})
     while True:
         try:
@@ -1184,7 +1357,10 @@ def loop(mode: str, timeout: int, once: bool) -> None:
             if mode == "tmux":
                 refresh_typing_keepalive()
                 try:
-                    send_permission_prompt_if_needed()
+                    route_chat_id, route_thread_id = active_task_route()
+                    if route_chat_id is None:
+                        route_chat_id, route_thread_id = active_keepalive_route()
+                    send_permission_prompt_if_needed(chat_id=route_chat_id, message_thread_id=route_thread_id)
                 except Exception as exc:
                     log_event("permission_watch_error", {"target": tmux_target(), "error": str(exc)})
         except Exception as exc:
@@ -1195,13 +1371,14 @@ def loop(mode: str, timeout: int, once: bool) -> None:
 
 
 def sync_offset() -> None:
-    load_env_file()
+    load_and_validate_env()
     updates = get_updates(1)
     if updates:
-        state = read_state()
-        state["offset"] = max(int(u["update_id"]) for u in updates) + 1
-        state["updated_at"] = now_iso()
-        write_state(state)
+        with state_lock():
+            state = read_state()
+            state["offset"] = max(int(u["update_id"]) for u in updates) + 1
+            state["updated_at"] = now_iso()
+            write_state(state)
         print(f"synced offset to {state['offset']} ({len(updates)} existing update(s) skipped)")
     else:
         print("no existing updates; offset unchanged")
@@ -1229,6 +1406,7 @@ def main() -> None:
     send.add_argument("--html", action="store_const", const="HTML", dest="parse_mode")
     send.add_argument("--markdown-v2", action="store_const", const="MarkdownV2", dest="parse_mode")
     send.add_argument("--plain", action="store_true", help="send without parse_mode, ignoring COD_TELEGRAM_PARSE_MODE")
+    send.add_argument("--message-thread-id", type=int)
     send.add_argument("text")
 
     photo = sub.add_parser("send-photo")
@@ -1236,13 +1414,16 @@ def main() -> None:
     photo.add_argument("--html", action="store_const", const="HTML", dest="parse_mode")
     photo.add_argument("--markdown-v2", action="store_const", const="MarkdownV2", dest="parse_mode")
     photo.add_argument("--plain", action="store_true", help="send caption without parse_mode")
+    photo.add_argument("--message-thread-id", type=int)
     photo.add_argument("--caption", default="")
     photo.add_argument("path")
 
     typing = sub.add_parser("typing")
     typing.add_argument("--action", default="typing")
+    typing.add_argument("--message-thread-id", type=int)
 
-    sub.add_parser("check-permission")
+    check_permission = sub.add_parser("check-permission")
+    check_permission.add_argument("--message-thread-id", type=int)
 
     sub.add_parser("sync-offset")
     sub.add_parser("cleanup-downloads")
@@ -1260,33 +1441,31 @@ def main() -> None:
         init_env(args.token, args.chat_id)
     elif args.command == "send":
         require_explicit_instance_for_cli_outbound()
-        load_env_file()
-        validate_loaded_env_instance()
+        load_and_validate_env()
         send_message(
             args.text,
+            message_thread_id=args.message_thread_id,
             parse_mode=None if args.plain else args.parse_mode,
             use_default_parse_mode=not args.plain,
         )
     elif args.command == "send-photo":
         require_explicit_instance_for_cli_outbound()
-        load_env_file()
-        validate_loaded_env_instance()
+        load_and_validate_env()
         send_photo(
             args.path,
             caption=args.caption,
+            message_thread_id=args.message_thread_id,
             parse_mode=None if args.plain else args.parse_mode,
             use_default_parse_mode=not args.plain,
         )
     elif args.command == "typing":
         require_explicit_instance_for_cli_outbound()
-        load_env_file()
-        validate_loaded_env_instance()
-        send_chat_action(args.action)
+        load_and_validate_env()
+        send_chat_action(args.action, message_thread_id=args.message_thread_id)
     elif args.command == "check-permission":
         require_explicit_instance_for_cli_outbound()
-        load_env_file()
-        validate_loaded_env_instance()
-        send_permission_prompt_if_needed()
+        load_and_validate_env()
+        send_permission_prompt_if_needed(message_thread_id=args.message_thread_id)
     elif args.command == "sync-offset":
         sync_offset()
     elif args.command == "cleanup-downloads":

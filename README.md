@@ -243,13 +243,13 @@ python3 COD_telegram_gateway.py init-env --token '<telegram-bot-token>' --chat-i
 Start/refresh the LaunchAgent for the current tmux pane:
 
 ```bash
-python3 COD_telegram_gateway.py start-gateway
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py start-gateway
 ```
 
 Check status:
 
 ```bash
-python3 COD_telegram_gateway.py status
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py status
 ```
 
 Stop the LaunchAgent:
@@ -269,6 +269,7 @@ Short reply helper for Codex agents:
 ```bash
 ./tg-reply "Heard."
 ./tg-reply --html '<b>Done.</b> Checks passed.'
+./tg-reply --message-thread-id 123 "Thread reply."
 ```
 
 `tg-reply` infers the gateway instance from the current tmux session (`codex` -> default, `codex-tools` -> tools). If multiple instances exist and the instance cannot be inferred, outbound sends fail closed instead of falling back to the wrong chat.
@@ -282,19 +283,20 @@ CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py typing
 Run the gateway in the foreground:
 
 ```bash
-python3 COD_telegram_gateway.py run --mode tmux --timeout 30
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py run --mode tmux --timeout 30
 ```
 
 Queue only, without injecting into tmux:
 
 ```bash
-python3 COD_telegram_gateway.py run --mode queue --timeout 30
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py run --mode queue --timeout 30
 ```
 
 Check the current tmux pane for a permission prompt and send Telegram buttons if one is visible:
 
 ```bash
 CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py check-permission
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py check-permission --message-thread-id 123
 ```
 
 ## Typing Keepalive
@@ -380,7 +382,10 @@ Two Enter keystrokes are intentional. Some Codex TUI paste states need the first
 
 ```text
 COD_TELEGRAM_SUBMIT_KEYS=C-m
+TELEGRAM_OWNER_USER_ID=
 ```
+
+`TELEGRAM_OWNER_USER_ID` is optional for private 1:1 bot chats. Set it when the owner chat is a group, supergroup, or forum topic; without it, non-private chats are rejected because chat-level allow-listing would let any member of that chat control Codex.
 
 ## Telegram Formatting
 
@@ -423,9 +428,12 @@ For quick acknowledgements, reply immediately:
 
 ```bash
 ./tg-reply "Heard."
+./tg-reply --message-thread-id 123 "Heard."
 ```
 
 The helper detects the active tmux session and refuses mismatched `CODEX_TELEGRAM_INSTANCE` values, which prevents cross-talk between named Codex sessions.
+
+When an inbound Telegram forum/topic message is injected, the prompt includes an explicit `--message-thread-id` reply command. Use that command for topic replies. Automatic sticky thread reuse is off by default to avoid last-message-wins cross-talk between topics.
 
 For normal plain-text replies:
 
@@ -485,7 +493,7 @@ deploy  -> .env.codex-telegram-deploy -> codex-deploy:0.0 -> com.codex.COD_teleg
 Create a separate bot token for each instance through BotFather, then initialize each instance:
 
 ```bash
-./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>' --mode yolo --workdir "$HOME"
+./codex-telegram add tools --token '<tools-bot-token>' --chat-id '<your-chat-id>' --user-id '<your-user-id>' --mode yolo --workdir "$HOME"
 ./codex-telegram add deploy --token '<deploy-bot-token>' --chat-id '<your-chat-id>' --mode stark --workdir "$HOME"
 ```
 
@@ -516,13 +524,17 @@ Send through an instance's bot:
 
 ```bash
 ./codex-telegram send tools "Tools instance is online."
+./codex-telegram send tools --message-thread-id 123 "Tools topic reply."
 ```
+
+`./codex-telegram send NAME` and `./codex-telegram photo NAME` are explicit operator routes. They set an operator-send flag so they can target `NAME` even when run from another tmux session. `tg-reply` remains strict and is intended for replies from the active Codex session.
 
 Send a photo/image out through an instance's bot:
 
 ```bash
 ./codex-telegram photo tools --caption "Tools screenshot" ./screenshot.png
 ./codex-telegram photo tools --html --caption '<b>Tools screenshot</b>' ./screenshot.png
+./codex-telegram photo tools --message-thread-id 123 --caption "Tools topic screenshot" ./screenshot.png
 ```
 
 ## Images In And Out
@@ -564,7 +576,7 @@ COD_TELEGRAM_DOWNLOAD_RETENTION_DAYS=14
 Clean old downloads:
 
 ```bash
-python3 COD_telegram_gateway.py cleanup-downloads
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py cleanup-downloads
 ./codex-telegram cleanup tools
 ```
 
@@ -586,7 +598,9 @@ Each instance needs:
 - its own event log,
 - its own process manager or LaunchAgent label.
 
-One bot per instance is the simplest model. A single bot routing multiple Codex sessions is possible, but it requires command or topic routing and more authorization logic.
+One bot per instance is the supported safe model. A single bot routing multiple Codex sessions is possible, but it requires command or topic routing and more authorization logic.
+
+For Telegram forum topics, prefer explicit `--message-thread-id` replies. The gateway records the latest thread for diagnostics, but it will not reuse that sticky thread for ordinary outbound sends unless `COD_TELEGRAM_STICKY_THREADS=1` is set. Leave sticky threads off unless you understand the last-message-wins risk.
 
 If something feels stuck:
 
@@ -604,6 +618,7 @@ This is intentionally simple and conservative:
 - `.env*` is ignored by git.
 - Only `TELEGRAM_OWNER_CHAT_ID` is accepted.
 - Unknown chats are logged and ignored.
+- Private 1:1 chats are accepted by chat ID. Group, supergroup, and forum-topic use requires `TELEGRAM_OWNER_USER_ID` so inbound messages and permission button callbacks are also checked against the sender.
 - The gateway does not expose an HTTP server.
 - The gateway does not run arbitrary shell commands by itself; it only injects text into your existing Codex tmux pane.
 - Permission buttons send configured keystrokes to the active tmux pane. Review the prompt tail in Telegram before approving.
@@ -617,6 +632,7 @@ The included `.gitignore` excludes:
 - `.env.codex-telegram` and other `.env*` files,
 - `COD_gateway_events.jsonl`,
 - `COD_gateway_state.json`,
+- `COD_gateway_state*.lock`,
 - Python caches,
 - generated local LaunchAgent plist,
 - private operator notes.
@@ -635,13 +651,13 @@ Do not commit real tokens, private Telegram logs, customer/project notes, or mac
 1. `COD_telegram_gateway.py run --mode tmux` polls Telegram with `getUpdates`.
 2. A message from the allow-listed chat is logged locally.
 3. The gateway sends `sendChatAction(action="typing")` to Telegram.
-4. For text messages, the gateway wraps the message as `[Telegram] <text>`.
+4. For text messages, the gateway wraps the message as `[Telegram] <text>`. Topic messages include the thread ID and an explicit reply command.
 5. For image messages, the gateway downloads the image into `COD_gateway_downloads/<instance>/`, validates it, and adds the saved absolute path to the Codex prompt.
 6. It loads the prompt into a temporary tmux buffer.
 7. It pastes the buffer into the configured tmux pane.
 8. It sends the configured submit keys to the pane.
 9. Codex processes the message normally in the existing TUI session.
-10. Codex replies to Telegram by running `COD_telegram_gateway.py send` for text or `COD_telegram_gateway.py send-photo` for images with the correct `CODEX_TELEGRAM_INSTANCE`.
+10. Codex replies to Telegram by running `COD_telegram_gateway.py send` for text or `COD_telegram_gateway.py send-photo` for images with the correct `CODEX_TELEGRAM_INSTANCE`, and `--message-thread-id` when the injected prompt provides one.
 
 ## Notes
 

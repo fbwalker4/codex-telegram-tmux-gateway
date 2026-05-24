@@ -8,6 +8,7 @@ COD_gateway_events.jsonl
 COD_gateway_events-*.jsonl
 COD_gateway_state.json
 COD_gateway_state-*.json
+COD_gateway_state*.lock
 COD_gateway_downloads*/
 *.download
 *.log

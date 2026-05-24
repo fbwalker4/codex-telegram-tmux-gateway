@@ -67,6 +67,23 @@ load_instance_env() {
 
 load_instance_env "${ENV_FILE}"
 
+normalize_instance_value() {
+  local value="${1:-}"
+  if [[ -z "${value}" || "${value}" == "default" ]]; then
+    printf 'default'
+    return 0
+  fi
+  printf '%s' "${value}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^[-_]+//; s/[-_]+$//'
+}
+
+EXPECTED_INSTANCE="$(normalize_instance_value "${INSTANCE:-default}")"
+LOADED_INSTANCE="$(normalize_instance_value "${CODEX_TELEGRAM_INSTANCE:-default}")"
+if [[ "${LOADED_INSTANCE}" != "${EXPECTED_INSTANCE}" ]]; then
+  echo "Refusing to start: ${ENV_FILE} declares CODEX_TELEGRAM_INSTANCE=${CODEX_TELEGRAM_INSTANCE:-default}, but requested instance is ${EXPECTED_INSTANCE}." >&2
+  exit 2
+fi
+export CODEX_TELEGRAM_INSTANCE="${EXPECTED_INSTANCE}"
+
 if [[ -n "${INSTANCE}" ]]; then
   DEFAULT_SESSION="codex-${INSTANCE}"
 else
@@ -252,7 +269,7 @@ if [[ "${CREATED_SESSION}" == "1" ]]; then
   if [[ -n "${INSTANCE}" ]]; then
     reply_prefix="CODEX_TELEGRAM_INSTANCE=${INSTANCE} "
   fi
-  bootstrap_prompt="You are the Codex session for Telegram gateway instance '${INSTANCE:-default}'. Telegram messages arrive prefixed as [Telegram]. Treat the text after [Telegram] exactly like the user typed it in the TUI. For final answers to Telegram, run: ${reply_prefix}${PYTHON} ${GATEWAY} send \"<reply>\". Keep Telegram replies concise unless the task requires detail. Do not wait for terminal input when a Telegram message arrives."
+  bootstrap_prompt="You are the Codex session for Telegram gateway instance '${INSTANCE:-default}'. Telegram messages arrive prefixed as [Telegram]. Treat the text after [Telegram] exactly like the user typed it in the TUI. For final answers to Telegram, run: ${reply_prefix}${PYTHON} ${GATEWAY} send --plain \"<reply>\". If a Telegram prompt includes a message_thread_id or an explicit --message-thread-id reply command, include that same --message-thread-id on the reply. Keep Telegram replies concise unless the task requires detail. Do not wait for terminal input when a Telegram message arrives."
   printf '%s' "${bootstrap_prompt}" | tmux load-buffer -b "codex_telegram_bootstrap_${SESSION}" -
   tmux paste-buffer -b "codex_telegram_bootstrap_${SESSION}" -t "${TARGET}"
   send_submit_keys
@@ -267,7 +284,7 @@ import importlib.util
 spec = importlib.util.spec_from_file_location("gw", "${GATEWAY}")
 gw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gw)
-gw.load_env_file()
+gw.load_and_validate_env()
 gw.update_env_file({
     "CODEX_TELEGRAM_INSTANCE": "${INSTANCE:-default}",
     "CODEX_TELEGRAM_CODEX_WORKDIR": "${CODEX_WORKDIR}",
