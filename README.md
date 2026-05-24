@@ -229,7 +229,7 @@ The gateway injects it into Codex as:
 8. Reply to Telegram from Codex with:
 
 ```bash
-python3 COD_telegram_gateway.py send "your reply"
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py send --plain "your reply"
 ```
 
 ## Commands
@@ -261,7 +261,7 @@ python3 COD_telegram_gateway.py stop-gateway
 Send a Telegram message:
 
 ```bash
-python3 COD_telegram_gateway.py send "Done."
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py send --plain "Done."
 ```
 
 Short reply helper for Codex agents:
@@ -271,10 +271,12 @@ Short reply helper for Codex agents:
 ./tg-reply --html '<b>Done.</b> Checks passed.'
 ```
 
+`tg-reply` infers the gateway instance from the current tmux session (`codex` -> default, `codex-tools` -> tools). If multiple instances exist and the instance cannot be inferred, outbound sends fail closed instead of falling back to the wrong chat.
+
 Send a typing indicator manually:
 
 ```bash
-python3 COD_telegram_gateway.py typing
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py typing
 ```
 
 Run the gateway in the foreground:
@@ -292,14 +294,14 @@ python3 COD_telegram_gateway.py run --mode queue --timeout 30
 Check the current tmux pane for a permission prompt and send Telegram buttons if one is visible:
 
 ```bash
-python3 COD_telegram_gateway.py check-permission
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py check-permission
 ```
 
 ## Typing Keepalive
 
 Telegram typing indicators expire after a few seconds. When a Telegram request is handed to Codex, the gateway refreshes `sendChatAction(action="typing")` until one of these happens:
 
-- Codex sends a Telegram reply through `COD_telegram_gateway.py send`.
+- Codex sends a Telegram reply through `COD_telegram_gateway.py send` with the correct `CODEX_TELEGRAM_INSTANCE`, or through `tg-reply` after tmux instance inference.
 - The keepalive timeout expires.
 - The gateway is stopped.
 
@@ -385,7 +387,7 @@ COD_TELEGRAM_SUBMIT_KEYS=C-m
 Telegram supports formatted bot messages through `parse_mode`, including `MarkdownV2` and `HTML`. This gateway supports both per message. For everyday formatted operator messages, use the `--html` shortcut:
 
 ```bash
-python3 COD_telegram_gateway.py send --html '<b>Done</b>'
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py send --html '<b>Done</b>'
 ./codex-telegram send tools --html '<b>Tools instance is online.</b>'
 ./codex-telegram send tools --markdown-v2 '*Tools instance is online*'
 ```
@@ -403,7 +405,7 @@ HTML is usually less fragile for Codex replies because ordinary punctuation does
 If you set a default parse mode and need to force one plain-text send, use `--plain`:
 
 ```bash
-python3 COD_telegram_gateway.py send --plain 'Plain text, no Telegram parsing.'
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py send --plain 'Plain text, no Telegram parsing.'
 ./codex-telegram send tools --plain 'Plain text, no Telegram parsing.'
 ```
 
@@ -422,6 +424,8 @@ For quick acknowledgements, reply immediately:
 ```bash
 ./tg-reply "Heard."
 ```
+
+The helper detects the active tmux session and refuses mismatched `CODEX_TELEGRAM_INSTANCE` values, which prevents cross-talk between named Codex sessions.
 
 For normal plain-text replies:
 
@@ -531,8 +535,8 @@ The gateway supports images in both directions:
 Outbound image examples:
 
 ```bash
-python3 COD_telegram_gateway.py send-photo --caption "Preview" ./screenshot.png
-python3 COD_telegram_gateway.py send-photo --html --caption '<b>Preview</b>' ./screenshot.png
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py send-photo --caption "Preview" ./screenshot.png
+CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py send-photo --html --caption '<b>Preview</b>' ./screenshot.png
 ./codex-telegram photo tools --caption "Preview" ./screenshot.png
 ```
 
@@ -637,11 +641,11 @@ Do not commit real tokens, private Telegram logs, customer/project notes, or mac
 7. It pastes the buffer into the configured tmux pane.
 8. It sends the configured submit keys to the pane.
 9. Codex processes the message normally in the existing TUI session.
-10. Codex replies to Telegram by running `COD_telegram_gateway.py send` for text or `COD_telegram_gateway.py send-photo` for images.
+10. Codex replies to Telegram by running `COD_telegram_gateway.py send` for text or `COD_telegram_gateway.py send-photo` for images with the correct `CODEX_TELEGRAM_INSTANCE`.
 
 ## Notes
 
-Telegram typing indicators are temporary. Telegram clients usually display them for only a few seconds per `sendChatAction` call. For long-running work, call `python3 COD_telegram_gateway.py typing` periodically and send concise progress updates.
+Telegram typing indicators are temporary. Telegram clients usually display them for only a few seconds per `sendChatAction` call. For long-running work, call `CODEX_TELEGRAM_INSTANCE=default python3 COD_telegram_gateway.py typing` periodically and send concise progress updates.
 
 For development checks, run:
 

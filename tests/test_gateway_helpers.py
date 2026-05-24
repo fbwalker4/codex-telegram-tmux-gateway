@@ -25,6 +25,20 @@ class GatewayHelperTests(unittest.TestCase):
         self.assertEqual(self.gateway.normalize_instance_name("default"), "")
         self.assertEqual(self.gateway.normalize_instance_name("Tools Bot!"), "tools-bot")
 
+    def test_outbound_requires_explicit_instance_when_named_instances_exist(self):
+        self.assertFalse(self.gateway.outbound_requires_explicit_instance("tools", ["tools"]))
+        self.assertFalse(self.gateway.outbound_requires_explicit_instance("default", ["tools"]))
+        self.assertFalse(self.gateway.outbound_requires_explicit_instance(None, []))
+        self.assertTrue(self.gateway.outbound_requires_explicit_instance(None, ["tools"]))
+        self.assertTrue(self.gateway.outbound_requires_explicit_instance("", ["tools"]))
+
+    def test_instance_from_tmux_session_name(self):
+        self.assertEqual(self.gateway.instance_from_tmux_session_name("codex"), "")
+        self.assertEqual(self.gateway.instance_from_tmux_session_name("codex-tools"), "tools")
+        self.assertEqual(self.gateway.instance_from_tmux_session_name("codex-Tools Bot!"), "tools-bot")
+        self.assertIsNone(self.gateway.instance_from_tmux_session_name("other"))
+        self.assertIsNone(self.gateway.instance_from_tmux_session_name(""))
+
     def test_image_magic_detection(self):
         self.assertEqual(self.gateway.image_extension_from_magic(b"\xff\xd8\xffabc"), ".jpg")
         self.assertEqual(self.gateway.image_extension_from_magic(b"\x89PNG\r\n\x1a\nabc"), ".png")

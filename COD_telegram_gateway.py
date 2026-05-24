@@ -33,6 +33,9 @@ GATEWAY_ROOT = Path(__file__).resolve().parent
 DEFAULT_CODEX_WORKDIR = Path.home()
 
 
+RAW_INSTANCE_ENV = os.environ.get("CODEX_TELEGRAM_INSTANCE")
+
+
 def normalize_instance_name(value: str | None) -> str:
     raw = (value or "").strip().lower()
     if raw in {"", "default"}:
@@ -43,7 +46,7 @@ def normalize_instance_name(value: str | None) -> str:
     return normalized
 
 
-INSTANCE_NAME = normalize_instance_name(os.environ.get("CODEX_TELEGRAM_INSTANCE"))
+INSTANCE_NAME = normalize_instance_name(RAW_INSTANCE_ENV)
 INSTANCE_SUFFIX = f"-{INSTANCE_NAME}" if INSTANCE_NAME else ""
 LAUNCH_AGENT_SUFFIX = f".{INSTANCE_NAME}" if INSTANCE_NAME else ""
 ENV_PATH = Path(os.environ.get("CODEX_TELEGRAM_ENV", GATEWAY_ROOT / f".env.codex-telegram{INSTANCE_SUFFIX}"))
@@ -86,6 +89,81 @@ def load_env_file(path: Path = ENV_PATH) -> None:
             continue
         key, value = line.split("=", 1)
         os.environ[key.strip()] = value.strip().strip("'\"")
+
+
+def configured_named_instances(root: Path = GATEWAY_ROOT) -> list[str]:
+    names: list[str] = []
+    for path in root.glob(".env.codex-telegram-*"):
+        suffix = path.name.removeprefix(".env.codex-telegram-")
+        normalized = normalize_instance_name(suffix)
+        if normalized:
+            names.append(normalized)
+    return sorted(set(names))
+
+
+def outbound_requires_explicit_instance(raw_instance: str | None, configured_names: list[str]) -> bool:
+    return not (raw_instance or "").strip() and bool(configured_names)
+
+
+def instance_from_tmux_session_name(session_name: str | None) -> str | None:
+    session = (session_name or "").strip()
+    if not session:
+        return None
+    if session == "codex":
+        return ""
+    if session.startswith("codex-"):
+        return normalize_instance_name(session.removeprefix("codex-"))
+    return None
+
+
+def current_tmux_instance_hint() -> str | None:
+    if "TMUX" not in os.environ:
+        return None
+    try:
+        proc = subprocess.run(
+            ["tmux", "display-message", "-p", "#S"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return instance_from_tmux_session_name(proc.stdout.strip())
+
+
+def require_explicit_instance_for_cli_outbound() -> None:
+    tmux_hint = current_tmux_instance_hint()
+    if tmux_hint is not None and tmux_hint != INSTANCE_NAME:
+        raise SystemExit(
+            "Refusing Telegram send: current tmux session implies instance "
+            f"{tmux_hint or 'default'}, but this gateway process is bound to "
+            f"{INSTANCE_NAME or 'default'}. Run with CODEX_TELEGRAM_INSTANCE={tmux_hint or 'default'} "
+            "or use ./codex-telegram send <instance> ..."
+        )
+    configured_names = configured_named_instances()
+    if not outbound_requires_explicit_instance(RAW_INSTANCE_ENV, configured_names):
+        return
+    choices = ", ".join(["default", *configured_names])
+    raise SystemExit(
+        "Refusing ambiguous Telegram send: multiple gateway instances are configured "
+        f"({choices}), but CODEX_TELEGRAM_INSTANCE is not set. "
+        "Run with CODEX_TELEGRAM_INSTANCE=<instance> or use ./codex-telegram send <instance> ..."
+    )
+
+
+def validate_loaded_env_instance() -> None:
+    loaded = os.environ.get("CODEX_TELEGRAM_INSTANCE")
+    if loaded is None:
+        return
+    loaded_instance = normalize_instance_name(loaded)
+    if loaded_instance != INSTANCE_NAME:
+        raise SystemExit(
+            "Gateway instance mismatch: process is bound to "
+            f"{INSTANCE_NAME or 'default'} but {ENV_PATH} declares {loaded_instance or 'default'}."
+        )
 
 
 def update_env_file(updates: dict[str, str]) -> None:
@@ -910,9 +988,7 @@ def install_launch_agent() -> None:
     script = str(Path(__file__).resolve())
     workdir = str(GATEWAY_ROOT)
     path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
-    env_items = [("PATH", path)]
-    if INSTANCE_NAME:
-        env_items.append(("CODEX_TELEGRAM_INSTANCE", INSTANCE_NAME))
+    env_items = [("PATH", path), ("CODEX_TELEGRAM_INSTANCE", INSTANCE_NAME or "default")]
     if "CODEX_TELEGRAM_ENV" in os.environ:
         env_items.append(("CODEX_TELEGRAM_ENV", str(ENV_PATH)))
     env_plist = "\n".join(
@@ -1183,14 +1259,18 @@ def main() -> None:
     if args.command == "init-env":
         init_env(args.token, args.chat_id)
     elif args.command == "send":
+        require_explicit_instance_for_cli_outbound()
         load_env_file()
+        validate_loaded_env_instance()
         send_message(
             args.text,
             parse_mode=None if args.plain else args.parse_mode,
             use_default_parse_mode=not args.plain,
         )
     elif args.command == "send-photo":
+        require_explicit_instance_for_cli_outbound()
         load_env_file()
+        validate_loaded_env_instance()
         send_photo(
             args.path,
             caption=args.caption,
@@ -1198,10 +1278,14 @@ def main() -> None:
             use_default_parse_mode=not args.plain,
         )
     elif args.command == "typing":
+        require_explicit_instance_for_cli_outbound()
         load_env_file()
+        validate_loaded_env_instance()
         send_chat_action(args.action)
     elif args.command == "check-permission":
+        require_explicit_instance_for_cli_outbound()
         load_env_file()
+        validate_loaded_env_instance()
         send_permission_prompt_if_needed()
     elif args.command == "sync-offset":
         sync_offset()

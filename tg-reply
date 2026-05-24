@@ -5,6 +5,50 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-/opt/homebrew/bin/python3}"
 GATEWAY="${ROOT}/COD_telegram_gateway.py"
 
+if [[ -z "${CODEX_TELEGRAM_INSTANCE:-}" ]]; then
+  inferred=""
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    session_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    case "${session_name}" in
+      codex)
+        inferred="default"
+        ;;
+      codex-*)
+        inferred="${session_name#codex-}"
+        ;;
+    esac
+  fi
+  if [[ -n "${inferred}" ]]; then
+    export CODEX_TELEGRAM_INSTANCE="${inferred}"
+  else
+    shopt -s nullglob
+    instance_envs=("${ROOT}"/.env.codex-telegram-*)
+    shopt -u nullglob
+    if [[ "${#instance_envs[@]}" -gt 0 ]]; then
+      echo "Refusing ambiguous Telegram reply: CODEX_TELEGRAM_INSTANCE is not set and named instances exist." >&2
+      echo "Use CODEX_TELEGRAM_INSTANCE=<instance> ${PYTHON} ${GATEWAY} send --plain \"message\" or ./codex-telegram send <instance> \"message\"." >&2
+      exit 2
+    fi
+  fi
+else
+  if [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; then
+    session_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    inferred=""
+    case "${session_name}" in
+      codex)
+        inferred="default"
+        ;;
+      codex-*)
+        inferred="${session_name#codex-}"
+        ;;
+    esac
+    if [[ -n "${inferred}" && "${CODEX_TELEGRAM_INSTANCE}" != "${inferred}" ]]; then
+      echo "Refusing Telegram reply: CODEX_TELEGRAM_INSTANCE=${CODEX_TELEGRAM_INSTANCE} but tmux session ${session_name} implies ${inferred}." >&2
+      exit 2
+    fi
+  fi
+fi
+
 if [[ $# -eq 0 ]]; then
   echo "Usage: tg-reply [--html|--markdown-v2|--plain|--parse-mode MODE] \"message\"" >&2
   exit 1
