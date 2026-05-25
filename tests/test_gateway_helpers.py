@@ -48,6 +48,23 @@ class GatewayHelperTests(unittest.TestCase):
             else:
                 os.environ["CODEX_TELEGRAM_OPERATOR_SEND"] = old_value
 
+    def test_permission_buttons_default_enabled(self):
+        old_value = os.environ.get("COD_TELEGRAM_PERMISSION_BUTTONS")
+        try:
+            os.environ.pop("COD_TELEGRAM_PERMISSION_BUTTONS", None)
+            self.assertTrue(self.gateway.permission_buttons_enabled())
+            os.environ["COD_TELEGRAM_PERMISSION_BUTTONS"] = "0"
+            self.assertFalse(self.gateway.permission_buttons_enabled())
+            os.environ["COD_TELEGRAM_PERMISSION_BUTTONS"] = "false"
+            self.assertFalse(self.gateway.permission_buttons_enabled())
+            os.environ["COD_TELEGRAM_PERMISSION_BUTTONS"] = "1"
+            self.assertTrue(self.gateway.permission_buttons_enabled())
+        finally:
+            if old_value is None:
+                os.environ.pop("COD_TELEGRAM_PERMISSION_BUTTONS", None)
+            else:
+                os.environ["COD_TELEGRAM_PERMISSION_BUTTONS"] = old_value
+
     def test_instance_from_tmux_session_name(self):
         self.assertEqual(self.gateway.instance_from_tmux_session_name("codex"), "")
         self.assertEqual(self.gateway.instance_from_tmux_session_name("codex-tools"), "tools")

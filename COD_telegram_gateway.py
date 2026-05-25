@@ -324,7 +324,7 @@ def typing_interval_seconds() -> int:
 
 
 def permission_buttons_enabled() -> bool:
-    return os.environ.get("COD_TELEGRAM_PERMISSION_BUTTONS", "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("COD_TELEGRAM_PERMISSION_BUTTONS", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def max_image_bytes() -> int:

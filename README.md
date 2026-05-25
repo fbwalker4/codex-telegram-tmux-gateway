@@ -345,10 +345,10 @@ CODEX_APPROVAL_POLICY=on-request \
 
 ## Telegram Permission Buttons
 
-Permission buttons are disabled by default. Enable them only after confirming the key sequence matches your Codex TUI:
+Permission buttons are enabled by default. Disable them only if your Codex TUI uses a different approval flow or you want Telegram to remain read-only for permission prompts:
 
 ```text
-COD_TELEGRAM_PERMISSION_BUTTONS=1
+COD_TELEGRAM_PERMISSION_BUTTONS=0
 ```
 
 When enabled, if the gateway sees a real Codex permission prompt in the tmux pane, it sends a Telegram message with inline buttons:
@@ -365,10 +365,10 @@ Defaults:
 COD_TELEGRAM_APPROVE_KEYS=C-m
 COD_TELEGRAM_APPROVE_SESSION_KEYS=Down,C-m
 COD_TELEGRAM_DENY_KEYS=Escape
-COD_TELEGRAM_PERMISSION_BUTTONS=0
+COD_TELEGRAM_PERMISSION_BUTTONS=1
 ```
 
-These defaults are deliberately configurable because terminal approval UIs can change. If your Codex prompt requires different keys, update `.env.codex-telegram`.
+These defaults are deliberately configurable because terminal approval UIs can change. If your Codex prompt requires different keys, update `.env.codex-telegram` or set `COD_TELEGRAM_PERMISSION_BUTTONS=0`.
 
 ## Codex TUI Submit Keys
 
