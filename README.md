@@ -382,10 +382,7 @@ Two Enter keystrokes are intentional. Some Codex TUI paste states need the first
 
 ```text
 COD_TELEGRAM_SUBMIT_KEYS=C-m
-TELEGRAM_OWNER_USER_ID=
 ```
-
-`TELEGRAM_OWNER_USER_ID` is optional for private 1:1 bot chats. Set it when the owner chat is a group, supergroup, or forum topic; without it, non-private chats are rejected because chat-level allow-listing would let any member of that chat control Codex.
 
 ## Telegram Formatting
 
@@ -527,7 +524,7 @@ Send through an instance's bot:
 ./codex-telegram send tools --message-thread-id 123 "Tools topic reply."
 ```
 
-`./codex-telegram send NAME` and `./codex-telegram photo NAME` are explicit operator routes. They set an operator-send flag so they can target `NAME` even when run from another tmux session. `tg-reply` remains strict and is intended for replies from the active Codex session.
+`./codex-telegram send NAME` and `./codex-telegram photo NAME` are explicit operator routes. They set `CODEX_TELEGRAM_OPERATOR_SEND=1` internally so they can target `NAME` even when run from another tmux session. This is an accident-prevention bypass for deliberate operator commands, not a security boundary. `tg-reply` remains strict and is intended for replies from the active Codex session.
 
 Send a photo/image out through an instance's bot:
 
@@ -622,6 +619,9 @@ This is intentionally simple and conservative:
 - The gateway does not expose an HTTP server.
 - The gateway does not run arbitrary shell commands by itself; it only injects text into your existing Codex tmux pane.
 - Permission buttons send configured keystrokes to the active tmux pane. Review the prompt tail in Telegram before approving.
+- Permission callbacks reserve a matching pending prompt under a state lock, verify the current tmux prompt signature immediately before sending keys, and reject duplicate taps while a response is already `sending`.
+
+`TELEGRAM_OWNER_USER_ID` is optional for private 1:1 bot chats. Set it when the owner chat is a group, supergroup, or forum topic; without it, non-private chats are rejected because chat-level allow-listing would let any member of that chat control Codex.
 
 You are still responsible for what your Codex session is allowed to do. If your Codex process has broad filesystem or deployment permissions, Telegram becomes a remote control path to that session. Protect your Telegram account and bot token accordingly.
 
@@ -650,7 +650,7 @@ Do not commit real tokens, private Telegram logs, customer/project notes, or mac
 
 1. `COD_telegram_gateway.py run --mode tmux` polls Telegram with `getUpdates`.
 2. A message from the allow-listed chat is logged locally.
-3. The gateway sends `sendChatAction(action="typing")` to Telegram.
+3. The gateway records the active task route and sends `sendChatAction(action="typing")` to Telegram.
 4. For text messages, the gateway wraps the message as `[Telegram] <text>`. Topic messages include the thread ID and an explicit reply command.
 5. For image messages, the gateway downloads the image into `COD_gateway_downloads/<instance>/`, validates it, and adds the saved absolute path to the Codex prompt.
 6. It loads the prompt into a temporary tmux buffer.
@@ -658,6 +658,7 @@ Do not commit real tokens, private Telegram logs, customer/project notes, or mac
 8. It sends the configured submit keys to the pane.
 9. Codex processes the message normally in the existing TUI session.
 10. Codex replies to Telegram by running `COD_telegram_gateway.py send` for text or `COD_telegram_gateway.py send-photo` for images with the correct `CODEX_TELEGRAM_INSTANCE`, and `--message-thread-id` when the injected prompt provides one.
+11. If Codex later shows a permission prompt, the gateway routes the approval request back to the active task chat/thread instead of relying on a sticky latest-topic fallback.
 
 ## Notes
 
