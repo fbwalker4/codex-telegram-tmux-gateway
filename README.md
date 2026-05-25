@@ -6,6 +6,31 @@ The gateway polls a Telegram bot, accepts messages only from an allow-listed cha
 
 Created by F.B. "Rusty" Walker, IV and released as open source under the MIT License.
 
+## TLDR
+
+- This repo lets Telegram remote-control an existing local Codex TUI session running inside `tmux`.
+- It preserves terminal context because Telegram messages are injected into the same live Codex pane instead of launching one-off Codex processes.
+- The safe default is one Telegram bot per Codex session, with one owner chat allow-list and isolated env/state/log files per named instance.
+- Permission buttons are enabled by default, so Codex approval prompts can be approved or denied from Telegram after reviewing the prompt tail.
+- Named instances such as `tools` use separate tmux sessions, LaunchAgents, bot tokens, state files, and reply routing to prevent cross-talk.
+
+## Let Codex Install It For You
+
+If you already have Codex running on the machine where you want the gateway installed, give Codex this prompt:
+
+```text
+Install codex-telegram-tmux-gateway for me from:
+https://github.com/fbwalker4/codex-telegram-tmux-gateway
+
+Use the README. Do not create a new GitHub repository. Clone or update the existing package only. Set it up so Telegram messages go into a persistent Codex tmux session. Ask me for my Telegram bot token and owner chat ID if they are not already available. Keep secrets out of git. Use Stark mode by default. Permission buttons should stay enabled unless I explicitly ask to disable them. If I need multiple independent sessions, configure named instances with one bot per Codex session.
+```
+
+For multiple independent sessions, ask Codex to create named instances, one bot per session:
+
+```text
+Set up codex-telegram-tmux-gateway with separate named instances. Use one Telegram bot token per Codex tmux session. Keep each instance isolated with its own env file, state file, log, LaunchAgent, and tmux session. Do not create a new GitHub repository. Keep secrets out of git.
+```
+
 ## Why This Exists
 
 Codex is strongest when it is running where the work already lives: in a real terminal, inside the workspace, with the same context and tools you use at the keyboard. This project adds a small Telegram control surface to that local workflow, so you can keep operating terminal Codex sessions when you step away from the host machine.
@@ -121,23 +146,6 @@ This writes ignored local files only:
 ```text
 .env.codex-telegram-tools
 codex_telegram_instances.json
-```
-
-### Let Codex Install It For You
-
-If you already have Codex running on the machine where you want the gateway installed, you can give Codex this prompt:
-
-```text
-Install codex-telegram-tmux-gateway for me from:
-https://github.com/fbwalker4/codex-telegram-tmux-gateway
-
-Use the README. Do not create a new GitHub repository. Clone or update the existing package only. Set it up so Telegram messages go into a persistent Codex tmux session. Ask me for my Telegram bot token and owner chat ID if they are not already available. Keep secrets out of git. Use Stark mode by default. If I need multiple independent sessions, configure named instances with one bot per Codex session.
-```
-
-For multiple independent sessions, ask Codex to create named instances, one bot per session:
-
-```text
-Set up codex-telegram-tmux-gateway with separate named instances. Use one Telegram bot token per Codex tmux session. Keep each instance isolated with its own env file, state file, log, LaunchAgent, and tmux session. Do not create a new GitHub repository. Keep secrets out of git.
 ```
 
 ### Manual Install
