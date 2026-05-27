@@ -94,6 +94,7 @@ SESSION="${COD_TELEGRAM_TMUX_SESSION:-${DEFAULT_SESSION}}"
 WINDOW="${COD_TELEGRAM_TMUX_WINDOW:-0}"
 PANE="${COD_TELEGRAM_TMUX_PANE:-0}"
 TARGET="${SESSION}:${WINDOW}.${PANE}"
+EXACT_TARGET="=${SESSION}:${WINDOW}.${PANE}"
 CODEX_WORKDIR="${CODEX_TELEGRAM_CODEX_WORKDIR:-${PWD}}"
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
 CODEX_RUNTIME_MODE="${CODEX_TELEGRAM_CODEX_MODE:-stark}"
@@ -129,7 +130,7 @@ PYTHON="${PYTHON:-$(command -v python3 || true)}"
 CREATED_SESSION=0
 
 capture_target() {
-  tmux capture-pane -p -S -80 -t "${TARGET}" 2>/dev/null || true
+  tmux capture-pane -p -S -80 -t "${EXACT_TARGET}" 2>/dev/null || true
 }
 
 wait_for_pane_text() {
@@ -152,7 +153,7 @@ wait_for_codex_ready() {
     local pane
     pane="$(capture_target)"
     if printf '%s' "${pane}" | grep -Fq "Do you trust the contents of this directory?"; then
-      tmux send-keys -t "${TARGET}" C-m
+      tmux send-keys -t "${EXACT_TARGET}" C-m
       sleep 2
       continue
     fi
@@ -186,7 +187,7 @@ send_submit_keys() {
   for key in ${keys}; do
     key="$(printf '%s' "${key}" | xargs)"
     [[ -z "${key}" ]] && continue
-    tmux send-keys -t "${TARGET}" "${key}"
+    tmux send-keys -t "${EXACT_TARGET}" "${key}"
     sleep 0.15
   done
   IFS="${old_ifs}"
@@ -224,7 +225,7 @@ gw.launchctl("unload", str(gw.LAUNCH_AGENT_PATH))
 PY
 ) >/dev/null 2>&1 || true
 
-if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
+if ! tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq "${SESSION}"; then
   (
     cd "${GATEWAY_DIR}"
     "${PYTHON}" - "${GATEWAY}" "${CODEX_WORKDIR}" "${CODEX_RUNTIME_MODE}" "${INSTANCE:-default}" "${CODEX_BIN}" "${CODEX_ARGS[@]}" <<'PY'
@@ -271,7 +272,7 @@ if [[ "${CREATED_SESSION}" == "1" ]]; then
   fi
   bootstrap_prompt="You are the Codex session for Telegram gateway instance '${INSTANCE:-default}'. Telegram messages arrive prefixed as [Telegram]. Treat the text after [Telegram] exactly like the user typed it in the TUI. For final answers to Telegram, run: ${reply_prefix}${PYTHON} ${GATEWAY} send --plain \"<reply>\". If a Telegram prompt includes a message_thread_id or an explicit --message-thread-id reply command, include that same --message-thread-id on the reply. Keep Telegram replies concise unless the task requires detail. Do not wait for terminal input when a Telegram message arrives."
   printf '%s' "${bootstrap_prompt}" | tmux load-buffer -b "codex_telegram_bootstrap_${SESSION}" -
-  tmux paste-buffer -b "codex_telegram_bootstrap_${SESSION}" -t "${TARGET}"
+  tmux paste-buffer -b "codex_telegram_bootstrap_${SESSION}" -t "${EXACT_TARGET}"
   send_submit_keys
   tmux delete-buffer -b "codex_telegram_bootstrap_${SESSION}"
   wait_for_codex_idle 120 || true

@@ -869,6 +869,12 @@ def tmux_target() -> str:
     return os.environ.get("COD_TELEGRAM_TMUX_TARGET", DEFAULT_TMUX_TARGET)
 
 
+def parse_tmux_target(target: str) -> tuple[str, str, str]:
+    session_part, _, pane_part = target.lstrip("=").partition(":")
+    window, _, pane = (pane_part or "0.0").partition(".")
+    return session_part, window or "0", pane or "0"
+
+
 def tmux_require_command() -> str:
     return os.environ.get("COD_TELEGRAM_TMUX_REQUIRE_COMMAND", DEFAULT_TMUX_REQUIRE_COMMAND)
 
@@ -906,26 +912,37 @@ def current_tmux_target() -> str:
 
 
 def ensure_tmux_target(target: str) -> tuple[bool, str]:
-    session = target.split(":", 1)[0]
-    has_session = run_tmux(["has-session", "-t", session])
-    if has_session.returncode != 0:
+    target_session, target_window, target_pane = parse_tmux_target(target)
+    panes = run_tmux(
+        [
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_id}\t#{pane_current_command}",
+        ]
+    )
+    if panes.returncode != 0:
         return (
             False,
-            f"Codex tmux session is not running. Start Codex first in tmux target `{target}`, "
-            f"then resend the Telegram message.",
+            f"Could not inspect tmux panes for target `{target}`: {panes.stderr.strip() or panes.stdout.strip()}",
         )
-
-    pane_check = run_tmux(["display-message", "-p", "-t", target, "#{pane_id} #{pane_current_command}"])
-    if pane_check.returncode != 0:
+    pane_id = ""
+    current = ""
+    for raw in panes.stdout.splitlines():
+        session, window, pane, found_pane_id, command = (raw.split("\t", 4) + [""])[:5]
+        if session == target_session and window == target_window and pane == target_pane:
+            pane_id = found_pane_id
+            current = command
+            break
+    if not pane_id:
         return (
             False,
-            f"Codex tmux session exists, but target pane `{target}` was not found: "
-            f"{pane_check.stderr.strip() or pane_check.stdout.strip()}",
+            f"Exact Codex tmux pane `{target}` was not found. Start that exact session and pane, "
+            "then resend the Telegram message.",
         )
 
     require_command = tmux_require_command().strip()
     if require_command:
-        current = pane_check.stdout.strip().split(" ", 1)[1] if " " in pane_check.stdout.strip() else ""
         if require_command.lower() not in current.lower():
             return (
                 False,
